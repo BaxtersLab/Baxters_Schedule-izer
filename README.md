@@ -15,6 +15,8 @@ for OCR/accounting, and files are tunneled to the homelab PC via RemoteDexter.
 - **Capture** — camera/gallery/audio; images can be sent to Budget Blaster for OCR.
 - **Transfer** — pushes files to the homelab over the RemoteDexter native (`.so`) tunnel, with a staged fallback when the library isn't loaded.
 - **Agent** — a text-and-voice assistant. Type or tap-to-talk ("what's due", "add bill Rent 1200 on the 1st", "add event Dentist tomorrow at 2pm"); replies are shown and spoken via Android text-to-speech. The mic is on-demand only (press to start, stops on silence or tap) — never always-on listening.
+- **Alarms** — standalone alarms (overflow menu → Alarms) with a time, label, optional daily repeat, and an optional per-alarm tone. Backed by exact alarms (`setExactAndAllowWhileIdle`) and re-armed after reboot.
+- **Custom tones** — pick any audio file (e.g. a `.wav`) as the global alarm/alert tone in Settings, or per-alarm. When an alert fires the tone is played on the alarm stream (so it's audible even when silenced), followed by the spoken alert. The alerts notification channel is created silent to avoid double-sounding.
 - **Spoken alerts** — reminders are read aloud (TTS) in addition to the notification.
 - **Urgency engine** — an emoji badge that escalates with the number of pending items.
 

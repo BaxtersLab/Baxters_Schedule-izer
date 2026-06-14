@@ -2,7 +2,10 @@ package com.baxter.schedulaizer.util
 
 object AppConstants {
     // Notification channels
-    const val CHANNEL_ALERTS = "schedualizer_alerts"
+    // _v2: the alerts channel is now created silent (sound = null) because we play
+    // the alarm tone ourselves on the alarm stream. A channel's sound is immutable
+    // after creation, so a new id is required to retire the old default-sound channel.
+    const val CHANNEL_ALERTS = "schedualizer_alerts_v2"
     const val CHANNEL_SERVICE = "schedualizer_service"
     const val CHANNEL_TRANSFER = "schedualizer_transfer"
 
@@ -23,6 +26,9 @@ object AppConstants {
     const val PREF_HOMELAB_HOST = "homelab_host"
     const val PREF_HOMELAB_PORT = "homelab_port"
     const val PREF_BUDGET_BLASTER_ENDPOINT = "budget_blaster_endpoint"
+    // Global alarm/alert tone: a persisted content:// Uri string, or absent for the
+    // system default alarm sound.
+    const val PREF_ALARM_TONE_URI = "alarm_tone_uri"
 
     const val DEFAULT_HOMELAB_HOST = "192.168.1.100"
     const val DEFAULT_HOMELAB_PORT = 7891

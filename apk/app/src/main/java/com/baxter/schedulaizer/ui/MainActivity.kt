@@ -50,6 +50,10 @@ class MainActivity : AppCompatActivity() {
                 startActivity(intent)
                 true
             }
+            R.id.menu_alarms -> {
+                startActivity(Intent(this, com.baxter.schedulaizer.ui.alarms.AlarmsActivity::class.java))
+                true
+            }
             R.id.menu_background_transfers -> {
                 findNavController(R.id.nav_host_fragment)
                     .navigate(R.id.backgroundTransfersFragment)

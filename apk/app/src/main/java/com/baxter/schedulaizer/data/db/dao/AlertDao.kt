@@ -32,4 +32,15 @@ interface AlertDao {
 
     @Query("SELECT * FROM alerts WHERE isActive = 1 AND fireAtMs <= :nowMs")
     suspend fun getOverdueAlerts(nowMs: Long): List<AlertEntity>
+
+    // --- Standalone alarms (parentType = "alarm") ---
+
+    @Query("SELECT * FROM alerts WHERE parentType = 'alarm' ORDER BY fireAtMs ASC")
+    fun getAlarms(): Flow<List<AlertEntity>>
+
+    @Query("DELETE FROM alerts WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
+    @Query("UPDATE alerts SET isActive = :active WHERE id = :id")
+    suspend fun setActive(id: Long, active: Boolean)
 }

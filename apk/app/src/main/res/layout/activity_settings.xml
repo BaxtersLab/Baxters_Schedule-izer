@@ -53,4 +53,62 @@
         android:layout_marginTop="8dp"
         android:text="Save endpoint" />
 
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_marginTop="20dp"
+        android:layout_marginBottom="16dp"
+        android:background="#33000000" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Alarm &amp; alert tone"
+        android:textStyle="bold"
+        android:paddingBottom="4dp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Played on the alarm stream when a reminder or alarm fires. Pick any audio file (e.g. a .wav)."
+        android:textSize="12sp"
+        android:paddingBottom="8dp" />
+
+    <TextView
+        android:id="@+id/tv_tone_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Tone: System default alarm"
+        android:paddingBottom="8dp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btn_pick_tone"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:text="Pick tone" />
+
+        <Button
+            android:id="@+id/btn_preview_tone"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="Preview" />
+
+        <Button
+            android:id="@+id/btn_reset_tone"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="Default" />
+
+    </LinearLayout>
+
 </LinearLayout>

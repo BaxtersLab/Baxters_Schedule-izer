@@ -47,6 +47,16 @@
             android:exported="false"
             android:parentActivityName=".ui.MainActivity" />
 
+        <activity
+            android:name=".ui.alarms.AlarmsActivity"
+            android:exported="false"
+            android:parentActivityName=".ui.MainActivity" />
+
+        <activity
+            android:name=".ui.alarms.AlarmEditActivity"
+            android:exported="false"
+            android:parentActivityName=".ui.alarms.AlarmsActivity" />
+
         <service
             android:name=".service.SchedulaizerService"
             android:exported="false"

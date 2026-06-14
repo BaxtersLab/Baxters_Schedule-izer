@@ -102,8 +102,17 @@ class SchedulaizerApp : Application() {
 
     private fun createNotificationChannels() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // The alerts channel is HIGH-importance (heads-up) but SILENT: AlertReceiver
+            // plays the chosen alarm tone itself on the alarm stream, so letting the
+            // channel also ring would double up the sound.
+            val alerts = NotificationChannel(
+                AppConstants.CHANNEL_ALERTS, "Reminders & Alerts", NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                setSound(null, null)
+                enableVibration(true)
+            }
             val channels = listOf(
-                NotificationChannel(AppConstants.CHANNEL_ALERTS, "Reminders & Alerts", NotificationManager.IMPORTANCE_HIGH),
+                alerts,
                 NotificationChannel(AppConstants.CHANNEL_SERVICE, "Schedualizer Service", NotificationManager.IMPORTANCE_LOW),
                 NotificationChannel(AppConstants.CHANNEL_TRANSFER, "File Transfers", NotificationManager.IMPORTANCE_DEFAULT)
             )

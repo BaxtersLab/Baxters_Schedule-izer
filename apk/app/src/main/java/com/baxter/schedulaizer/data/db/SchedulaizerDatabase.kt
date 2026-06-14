@@ -10,7 +10,9 @@ import com.baxter.schedulaizer.data.db.entity.*
 
 @Database(
     entities = [EventEntity::class, BillEntity::class, MemoEntity::class, AttachmentEntity::class, AlertEntity::class],
-    version = 1,
+    // v2: AlertEntity gained soundUri + repeatDaily (custom alarm tones / standalone
+    // alarms). Schema change is handled by fallbackToDestructiveMigration (pre-release).
+    version = 2,
     exportSchema = false
 )
 @TypeConverters(AppTypeConverters::class)
