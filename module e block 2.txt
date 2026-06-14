@@ -1,0 +1,261 @@
+================================================================================
+BLOCK E-2 — ALERT SCHEDULER, RECEIVER & BOOT RECEIVER
+Module E: Service & Background
+================================================================================
+
+BLOCK ID:       E-2
+MODULE:         E — Service & Background
+CRATE:          com.baxter.schedulaizer.alerts
+DEPENDS ON:     E-1, D-4
+BUILD ORDER:    13 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block implements the full alert pipeline: scheduling alerts via
+WorkManager (inexact) and AlarmManager (exact), firing them via a
+BroadcastReceiver, building the notification, and rescheduling all active
+alerts at device boot. After this block, every event and bill can generate
+a timely push notification with Snooze and Dismiss actions.
+
+This block does NOT implement UI for viewing or creating alerts (that is the
+responsibility of CalendarFragment and BillsFragment in Module G).
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+
+FILE: app/src/main/java/com/baxter/schedulaizer/alerts/AlertScheduler.kt
+Role: Schedules and cancels alarms for events and bills.
+      Two scheduling strategies:
+        - Exact (AlarmManager.setExactAndAllowWhileIdle): for alerts < 24h away.
+        - WorkManager (OneTimeWorkRequest): for alerts >= 24h away (inexact,
+          battery-friendly). WorkManager re-schedules as exact when the work
+          runs within 24h of fire time.
+
+  object AlertScheduler
+
+  Functions:
+
+    suspend fun scheduleForEvent(context: Context, event: EventEntity,
+                                  repo: AttachmentRepository? = null)
+      Skips if event.alertOffsetMinutes <= 0.
+      Computes fireAtMs = event.startMs - (event.alertOffsetMinutes * 60_000L).
+      Skips if fireAtMs <= DateUtils.nowMs() (already passed).
+      Creates AlertEntity:
+        parentId = event.id
+        parentType = "event"
+        title = event.title
+        body = buildBody(event.alertOffsetMinutes) — e.g. "Starting in 15 minutes"
+        fireAtMs = fireAtMs
+        isActive = true
+      Inserts via AlertDao (injected or obtained from SchedulaizerApp).
+      Calls scheduleAlarm(context, alertEntity).
+
+    suspend fun scheduleForBill(context: Context, bill: BillEntity)
+      Similar to scheduleForEvent.
+      fireAtMs = bill.nextDueMs - (bill.alertOffsetMinutes * 60_000L).
+      Creates AlertEntity with parentType = "bill".
+      Calls scheduleAlarm(context, alertEntity).
+
+    fun scheduleAlarm(context: Context, alert: AlertEntity)
+      If fireAtMs is more than 24h in the future:
+        Enqueues a WorkManager OneTimeWorkRequest tagged with
+        AppConstants.UPLOAD_WORKER_TAG (reuse constant, or define
+        ALERT_WORKER_TAG in AppConstants if preferred).
+        The Worker class is AlertWorker (see below).
+        Sets initial delay = fireAtMs - nowMs - 24h.
+        When the Worker runs, it calls scheduleAlarm() again for the
+        now-imminent alarm.
+      Else:
+        Calls scheduleExact(context, alert).
+
+    fun scheduleExact(context: Context, alert: AlertEntity)
+      Checks AlarmManager.canScheduleExactAlarms() on API 31+.
+        If false: falls back to WorkManager inexact schedule.
+      Builds a PendingIntent to AlertReceiver with:
+        action = AppConstants.ACTION_FIRE_ALERT
+        extras: EXTRA_ALERT_ID = alert.id, EXTRA_ALERT_TITLE = alert.title,
+                EXTRA_ALERT_BODY = alert.body
+        requestCode = alert.id.toInt()
+        flags = PendingIntent.FLAG_UPDATE_CURRENT or FLAG_IMMUTABLE
+      Calls alarmManager.setExactAndAllowWhileIdle(
+          AlarmManager.RTC_WAKEUP, alert.fireAtMs, pendingIntent).
+
+    fun cancel(context: Context, alert: AlertEntity)
+      Rebuilds the PendingIntent with the same requestCode.
+      Calls alarmManager.cancel(pendingIntent).
+      Cancels any WorkManager work with the alert's tag.
+      Calls alertDao.deactivateAlert(alert.id) (suspend — call from coroutine).
+
+    fun rescheduleAll(context: Context, alerts: List<AlertEntity>)
+      Called by BootReceiver after reboot.
+      Iterates alerts, calls scheduleExact for each (they are already imminent
+      after a reboot — boot itself can take minutes so skip the 24h WorkManager
+      path on reschedule).
+
+    private fun buildBody(offsetMinutes: Int): String
+      Returns a human-readable string:
+        offset == 0     -> "Starting now"
+        offset < 60     -> "Starting in $offset minutes"
+        offset == 60    -> "Starting in 1 hour"
+        offset < 1440   -> "Starting in ${offset/60} hours"
+        offset == 1440  -> "Due tomorrow"
+        else            -> "Due in ${offset/1440} days"
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/alerts/AlertWorker.kt
+Role: WorkManager Worker that runs when an alert enters the ~24h window.
+      Re-schedules the alert as an exact alarm.
+
+  Class: AlertWorker(context: Context, params: WorkerParameters) :
+         CoroutineWorker(context, params)
+
+  doWork(): Result
+    Reads alertId from inputData (Long key = AppConstants.EXTRA_ALERT_ID).
+    If alertId is missing: returns Result.failure().
+    Loads AlertEntity from DB via SchedulaizerApp.get(applicationContext).
+    If alert is null or isActive == false: returns Result.success() (cancelled).
+    Calls AlertScheduler.scheduleExact(applicationContext, alert).
+    Returns Result.success().
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/alerts/AlertReceiver.kt
+Role: BroadcastReceiver that fires when an exact AlarmManager alarm triggers.
+      Builds and posts the notification with Snooze and Dismiss actions.
+
+  Class: AlertReceiver : BroadcastReceiver()
+
+  onReceive(context: Context, intent: Intent)
+    Reads action from intent:
+      If action == AppConstants.ACTION_FIRE_ALERT:
+        Reads alertId, title, body from intent extras.
+        Posts notification via AlertNotificationBuilder.build().
+        Deactivates the alert in DB: launch a coroutine with
+        SchedulaizerApp.get(context).database.alertDao().deactivateAlert(alertId).
+        Note: BroadcastReceiver.onReceive runs on main thread; Room access must
+        use GlobalScope.launch(Dispatchers.IO) as a coroutine — acceptable here
+        because the Receiver's lifecycle ends immediately after onReceive returns
+        and we cannot use goAsync() reliably across all API levels.
+      If action == AppConstants.ACTION_SNOOZE_ALERT:
+        Reads alertId from extras.
+        Reloads alert from DB. Computes snoozeUntilMs = nowMs + 1 hour.
+        Calls alertDao.snoozeAlert(alertId, snoozeUntilMs).
+        Calls AlertScheduler.scheduleExact() with a temporary AlertEntity
+        using snoozeUntilMs as fireAtMs.
+        Dismisses the current notification.
+      If action == AppConstants.ACTION_DISMISS_ALERT:
+        Calls alertDao.deactivateAlert(alertId).
+        Dismisses the notification.
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/alerts/AlertNotificationBuilder.kt
+Role: Builds NotificationCompat objects for fired alerts.
+
+  object AlertNotificationBuilder
+
+  fun build(context: Context, alertId: Long, title: String, body: String): Notification
+    Creates a NotificationCompat.Builder on channel AppConstants.CHANNEL_ALERTS.
+    Sets:
+      setContentTitle(title)
+      setContentText(body)
+      setSmallIcon(R.drawable.ic_notification)
+      setPriority(NotificationCompat.PRIORITY_HIGH)
+      setAutoCancel(false)  — user must explicitly act (snooze or dismiss)
+      setOngoing(false)     — can be swiped away (triggers DISMISS action)
+      setCategory(NotificationCompat.CATEGORY_REMINDER)
+
+    Content intent: taps the notification -> opens MainActivity.
+      PendingIntent pointing to MainActivity with FLAG_IMMUTABLE.
+
+    Snooze action:
+      PendingIntent to AlertReceiver with action ACTION_SNOOZE_ALERT,
+      extra EXTRA_ALERT_ID = alertId.
+      Label: "Snooze 1 hr"
+
+    Dismiss action:
+      PendingIntent to AlertReceiver with action ACTION_DISMISS_ALERT,
+      extra EXTRA_ALERT_ID = alertId.
+      Label: "Dismiss"
+
+    Adds both actions via .addAction().
+    Posts the notification via NotificationManagerCompat.from(context).notify(
+      alertId.toInt(), notification).
+
+    Note: On API 33+, POST_NOTIFICATIONS permission must be granted for this
+    to succeed. The app requests this permission at runtime in MainActivity (G-1).
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/alerts/BootReceiver.kt
+Role: Reschedules all active alerts after device reboot.
+
+  Class: BootReceiver : BroadcastReceiver()
+
+  onReceive(context: Context, intent: Intent)
+    Checks intent.action == Intent.ACTION_BOOT_COMPLETED.
+    Launches coroutine on GlobalScope (IO dispatcher):
+      Loads all active alerts via SchedulaizerApp.get(context).database
+        .alertDao().getActiveAlerts().first()
+        (collect first emission from Flow as a one-shot list).
+      Calls AlertScheduler.rescheduleAll(context, alerts).
+
+--------------------------------------------------------------------------------
+DATA FLOW
+--------------------------------------------------------------------------------
+Event/Bill save -> ViewModel calls AlertScheduler.scheduleForEvent/Bill()
+  -> AlertEntity inserted -> scheduleAlarm() -> AlarmManager (exact) or
+     WorkManager (distant future)
+
+When alarm fires:
+  AlarmManager -> AlertReceiver.onReceive(ACTION_FIRE_ALERT)
+    -> AlertNotificationBuilder.build() -> NotificationManager.notify()
+    -> alertDao.deactivateAlert()
+
+When user taps Snooze:
+  AlertReceiver.onReceive(ACTION_SNOOZE_ALERT)
+    -> alertDao.snoozeAlert() -> scheduleExact() with new time
+
+Device reboots:
+  BootReceiver.onReceive(BOOT_COMPLETED)
+    -> alertDao.getActiveAlerts() -> AlertScheduler.rescheduleAll()
+
+--------------------------------------------------------------------------------
+SAFETY & SECURITY NOTES
+--------------------------------------------------------------------------------
+- PendingIntent flags must include FLAG_IMMUTABLE on API 31+. Always use
+  FLAG_UPDATE_CURRENT | FLAG_IMMUTABLE.
+- canScheduleExactAlarms() must be checked before calling setExactAndAllowWhileIdle
+  on API 31+. Fallback to WorkManager prevents a SecurityException crash.
+- GlobalScope.launch in BroadcastReceiver is acceptable ONLY for short-lived
+  DB operations (< 1 second expected). Never spawn long-running work here.
+- Alert notification ID uses alertId.toInt(). If alertId > Int.MAX_VALUE,
+  overflow occurs — acceptable because Room auto-generates IDs starting from
+  1 and a personal-use app will never reach 2.1 billion alerts.
+
+--------------------------------------------------------------------------------
+UNIT TESTS — WHAT TO VERIFY
+--------------------------------------------------------------------------------
+- AlertScheduler.buildBody(15) returns "Starting in 15 minutes".
+- AlertScheduler.buildBody(60) returns "Starting in 1 hour".
+- AlertScheduler.buildBody(1440) returns "Due tomorrow".
+- AlertScheduler.buildBody(2880) returns "Due in 2 days".
+- AlertScheduler.scheduleForEvent skips scheduling when alertOffsetMinutes == 0.
+- AlertScheduler.scheduleForEvent skips scheduling when fireAtMs is in the past.
+- AlertNotificationBuilder.build returns a Notification on the CHANNEL_ALERTS channel.
+- BootReceiver correctly calls rescheduleAll when action is BOOT_COMPLETED.
+- BootReceiver ignores intents with other actions (no crash).
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] AlertScheduler.kt compiles with scheduleForEvent, scheduleForBill,
+    scheduleAlarm, scheduleExact, cancel, rescheduleAll, buildBody.
+[ ] AlertWorker.kt compiles as a CoroutineWorker with doWork() implemented.
+[ ] AlertReceiver.kt handles all three actions without crash.
+[ ] AlertNotificationBuilder.kt builds a notification with two actions.
+[ ] BootReceiver.kt reschedules all active alerts on BOOT_COMPLETED.
+[ ] All PendingIntents use FLAG_IMMUTABLE.
+[ ] canScheduleExactAlarms() guard is present in scheduleExact().
+[ ] Unit tests for buildBody pass.
+[ ] ./gradlew :app:compileDebugKotlin passes for all 5 files.
+================================================================================

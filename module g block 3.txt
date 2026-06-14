@@ -1,0 +1,211 @@
+================================================================================
+BLOCK G-3 — BILLS FRAGMENT, VIEW MODEL & BILL EDIT ACTIVITY
+Module G: UI Layer
+================================================================================
+
+BLOCK ID:       G-3
+MODULE:         G — UI Layer
+CRATE:          com.baxter.schedulaizer.ui.bills
+DEPENDS ON:     G-1, D-4, E-2
+BUILD ORDER:    20 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block implements the Bills tab: BillsFragment (bill list with overdue
+highlighting and monthly total), BillsViewModel (data and state), and
+BillEditActivity (create/edit form). After this block, the user can manage
+all recurring bills, mark them paid (which auto-advances the cycle), and see
+a summary of what is owed this month.
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+
+FILE: app/src/main/java/com/baxter/schedulaizer/ui/bills/BillsViewModel.kt
+Role: State for the Bills tab.
+
+  Class: BillsViewModel(application: Application) : AndroidViewModel(application)
+
+  private val billRepo = SchedulaizerApp.get(application).billRepository
+
+  State flows:
+    private val _showPaidBills = MutableStateFlow(false)
+
+    val bills: StateFlow<List<BillEntity>>
+      Combines billRepo.allBills / billRepo.unpaidBills based on _showPaidBills.
+      When _showPaidBills = false: uses billRepo.unpaidBills.
+      When _showPaidBills = true: uses billRepo.allBills.
+      stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    val totalDueThisMonthCents: StateFlow<Long>
+      = flow { emit(billRepo.totalUnpaidCentsUpTo(DateUtils.endOfMonthMs())) }
+        .stateIn(viewModelScope, SharingStarted.Lazily, 0L)
+      Re-emits when bills change by combining with bills flow.
+
+  Functions:
+    fun setShowPaidBills(show: Boolean) — updates _showPaidBills
+    suspend fun markPaid(billId: Long)  — calls billRepo.markPaid(billId)
+    suspend fun deleteBill(bill: BillEntity) — calls billRepo.delete(bill)
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/ui/bills/BillsFragment.kt
+Role: Displays the bill list with overdue/due-soon highlighting and totals banner.
+
+  Class: BillsFragment : Fragment(R.layout.fragment_bills)
+
+  UI components (FragmentBillsBinding):
+    recyclerViewBills: RecyclerView
+    textTotalDue: TextView            — "Due this month: $X.XX"
+    switchShowPaid: SwitchMaterial    — toggle to show/hide paid bills
+    btnAddBill: FloatingActionButton  — open BillEditActivity (new bill)
+
+  onViewCreated():
+    Binds ViewModel.
+    RecyclerView with BillAdapter (vertical list).
+    Observes viewModel.bills -> submits to BillAdapter.
+    Observes viewModel.totalDueThisMonthCents -> updates textTotalDue.
+    switchShowPaid listener -> viewModel.setShowPaidBills().
+    btnAddBill -> navigate to billEditActivity with bill_id = 0L.
+
+  BillAdapter (inner class or BillAdapter.kt):
+    Each row shows item_bill.xml.
+    Overdue rows: background = R.color.overdueRed.
+    Due soon (within 3 days): priority stripe = HIGH color.
+    Shows: name, amount, due date, days until due badge, paid checkmark.
+    On item click: navigate to BillEditActivity with bill_id = bill.id.
+    On "Mark Paid" button tap: viewModel.markPaid(bill.id).
+    On item long press: confirmation dialog -> viewModel.deleteBill(bill).
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/ui/bills/BillEditActivity.kt
+Role: Full-screen form for creating and editing bills.
+
+  Class: BillEditActivity : AppCompatActivity()
+
+  Navigation args:
+    bill_id: Long (0L = new)
+
+  UI components (ActivityBillEditBinding):
+    editName: EditText               — bill name
+    editAmount: EditText             — formatted as "$0.00", inputType numberDecimal
+    editDueDayOfMonth: EditText      — 1–31, inputType number
+    spinnerInterval: Spinner         — "Monthly", "Quarterly", "Yearly" etc.
+                                       backed by RecurrenceType values (excluding DAILY, WEEKLY)
+    spinnerCategory: Spinner         — EventCategory
+    spinnerPriority: Spinner         — PriorityLevel
+    editNotes: EditText              — optional notes (account info, etc.)
+    seekBarAlert: SeekBar            — alert offset, same steps as EventEditActivity
+    textAlertSummary: TextView       — "Alert: 1 day before"
+    btnSave: Button
+    btnCancel: Button
+
+  Behavior:
+    On load (bill_id != 0L): loads BillEntity, populates fields.
+    On load (bill_id == 0L): blank form.
+    Validates:
+      - name not blank
+      - dueDayOfMonth in 1..31
+      - amount parseable as a non-negative decimal
+    btnSave:
+      Converts amount text ("45.00") to cents (4500L).
+      Calls billRepo.save(bill).
+      Calls AlertScheduler.scheduleForBill(context, savedBill).
+      setResult(RESULT_OK), finish().
+    btnCancel: finish().
+
+
+FILE: app/src/main/res/layout/fragment_bills.xml
+Role: Bills tab layout.
+
+  Structure:
+    ConstraintLayout
+      TextView (id: textTotalDue, top banner, bold, large text)
+      SwitchMaterial (id: switchShowPaid, "Show paid bills")
+      RecyclerView (id: recyclerViewBills)
+      FloatingActionButton (id: btnAddBill, icon: ic_add)
+
+
+FILE: app/src/main/res/layout/item_bill.xml
+Role: Single bill row.
+
+  Structure:
+    ConstraintLayout (background = overdueRed when overdue, else colorSurface)
+      View (priorityStripe, 4dp wide, full height)
+      TextView (id: textBillName — bill name, bold)
+      TextView (id: textAmount — "$45.00" or "Amount varies")
+      TextView (id: textDueDate — "Due Jun 15" or "OVERDUE")
+      TextView (id: textDaysUntil — "in 7 days" / "TODAY" / "OVERDUE")
+      CheckBox (id: checkPaid — shows paid state; tapping fires markPaid)
+      ImageView (id: iconRecurrence — recurring icon, always visible for bills)
+
+
+FILE: app/src/main/res/layout/activity_bill_edit.xml
+Role: Bill edit form layout.
+
+  Structure:
+    ScrollView
+      LinearLayout (vertical, padding 16dp)
+        editName (EditText, hint "Bill name e.g. Electric")
+        editAmount (EditText, hint "$0.00", inputType numberDecimal)
+        editDueDayOfMonth (EditText, hint "Day of month (1-31)")
+        spinnerInterval (Spinner)
+        spinnerCategory (Spinner)
+        spinnerPriority (Spinner)
+        editNotes (EditText, hint "Notes (bank name, etc.)", multiline)
+        seekBarAlert
+        textAlertSummary
+        LinearLayout (buttons row)
+          btnCancel
+          btnSave
+
+--------------------------------------------------------------------------------
+DATA FLOW
+--------------------------------------------------------------------------------
+User taps "Mark Paid" in BillAdapter:
+  BillsFragment -> viewModel.markPaid(id)
+  -> viewModelScope.launch(IO) { billRepo.markPaid(id) }
+  -> BillRepository.markPaid() [marks paid, advances nextDueMs]
+  -> Room emits updated bills list
+  -> BillsViewModel.bills StateFlow re-emits
+  -> BillAdapter diff updates the row (paid checkmark, new due date)
+
+Monthly total banner:
+  bills StateFlow changes -> totalDueThisMonthCents re-evaluated
+  -> textTotalDue updated with new total
+
+--------------------------------------------------------------------------------
+SAFETY & SECURITY NOTES
+--------------------------------------------------------------------------------
+- editNotes field: placeholder text explicitly says "(bank name, etc.)".
+  Do NOT hint or suggest storing passwords, card numbers, or PINs.
+- Amount parsing from text input: always use BigDecimal for parsing the display
+  string before converting to cents:
+    val cents = (BigDecimal(editAmount.text.toString()).setScale(2)
+                 .multiply(BigDecimal(100))).toLong()
+  This avoids floating-point precision errors when converting "$45.99" -> 4599.
+
+--------------------------------------------------------------------------------
+UNIT TESTS — WHAT TO VERIFY
+--------------------------------------------------------------------------------
+- BillsViewModel.bills emits unpaid bills only when showPaidBills = false.
+- BillsViewModel.bills emits all bills when showPaidBills = true.
+- BillsViewModel.totalDueThisMonthCents sums only unpaid bills due before
+  end of month.
+- BillEditActivity converts "$45.99" -> 4599L without floating-point error.
+- BillEditActivity shows error when dueDayOfMonth = 32 (out of range).
+- After markPaid(), the bill's nextDueMs advances by intervalMonths —
+  confirmed via BillRepository unit test from D-4.
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] BillsViewModel.kt compiles with bills StateFlow combining paid/unpaid toggle.
+[ ] totalDueThisMonthCents uses billRepo.totalUnpaidCentsUpTo(endOfMonthMs).
+[ ] BillsFragment.kt compiles and shows total due banner.
+[ ] Overdue bill rows display overdueRed background in BillAdapter.
+[ ] BillEditActivity.kt compiles with save, cancel, validation.
+[ ] Amount conversion uses BigDecimal (no float intermediate).
+[ ] fragment_bills.xml, item_bill.xml, activity_bill_edit.xml all exist.
+[ ] ./gradlew :app:assembleDebug builds with zero errors.
+================================================================================

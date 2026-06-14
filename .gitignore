@@ -1,0 +1,20 @@
+# Gradle / Android build output (regenerable)
+.gradle/
+build/
+*.iml
+.idea/
+.cxx/
+.externalNativeBuild/
+captures/
+
+# Machine-specific
+local.properties
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Release signing secrets — never commit
+keystore.properties
+*.jks
+*.keystore

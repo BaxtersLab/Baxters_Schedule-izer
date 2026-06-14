@@ -1,0 +1,250 @@
+================================================================================
+BLOCK D-4 — REPOSITORIES
+Module D: Data Layer (Room)
+================================================================================
+
+BLOCK ID:       D-4
+MODULE:         D — Data Layer (Room)
+CRATE:          com.baxter.schedulaizer.data.repository
+DEPENDS ON:     D-3, C-2
+BUILD ORDER:    11 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block creates the three Repository classes that sit between the DAOs and
+the ViewModels. Repositories apply business logic: they compute next due dates,
+cascade-delete related records, validate inputs, and expose clean Flow streams
+to the UI layer. After this block, ViewModels have a stable, tested API to call
+and never need to touch DAOs directly.
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+
+FILE: app/src/main/java/com/baxter/schedulaizer/data/repository/EventRepository.kt
+Role: Business logic layer for calendar events. Wraps EventDao and coordinates
+      with AlertDao for alert lifecycle.
+
+  Class: EventRepository(
+    private val eventDao: EventDao,
+    private val alertDao: AlertDao
+  )
+
+  Properties:
+    val allEvents: Flow<List<EventEntity>>
+      = eventDao.getAllEvents()
+      Exposed directly to CalendarViewModel.
+
+    val upcomingEvents: Flow<List<EventEntity>>
+      = eventDao.getUpcomingEvents(DateUtils.todayStartMs())
+      Live view of future events only.
+
+  Functions:
+
+    fun getEventsInRange(fromMs: Long, toMs: Long): Flow<List<EventEntity>>
+      Delegates to eventDao.getEventsInRange(fromMs, toMs).
+
+    suspend fun save(event: EventEntity): Long
+      Validates:
+        - title is not blank (throw IllegalArgumentException if blank)
+        - endMs >= startMs (throw IllegalArgumentException if violated)
+      If event.id == 0L: calls eventDao.insertEvent(event) and returns new ID.
+      If event.id != 0L: sets event.updatedMs = DateUtils.nowMs(), calls
+        eventDao.updateEvent(event), returns event.id.
+      After insert/update: if event.alertOffsetMinutes > 0, the caller
+      (CalendarFragment via ViewModel) is responsible for calling
+      AlertScheduler.scheduleForEvent(). The Repository does not call
+      AlertScheduler directly (avoids circular dependency).
+
+    suspend fun delete(event: EventEntity)
+      Calls eventDao.deleteEvent(event).
+      Calls memoDao would be needed but MemoDao is not injected here —
+      cascade deletion of memos and alerts is handled by the ViewModel layer
+      calling MemoDao and AlertDao directly, or via a coordinated delete
+      method added in a future block if needed.
+      For v1: delete the event entity only; memo/alert cleanup is ViewModel
+      responsibility.
+
+    suspend fun getById(id: Long): EventEntity?
+      Delegates to eventDao.getEventById(id).
+
+    fun getByPriority(maxPriority: Int): Flow<List<EventEntity>>
+      Delegates to eventDao.getEventsByPriority(maxPriority).
+
+    suspend fun countInRange(fromMs: Long, toMs: Long): Int
+      Delegates to eventDao.countEventsInRange(fromMs, toMs).
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/data/repository/BillRepository.kt
+Role: Business logic for recurring bills. Manages next-due-date calculation,
+      paid/unpaid cycling, and total due summaries.
+
+  Class: BillRepository(
+    private val billDao: BillDao,
+    private val alertDao: AlertDao
+  )
+
+  Properties:
+    val allBills: Flow<List<BillEntity>>
+      = billDao.getAllBills()
+
+    val unpaidBills: Flow<List<BillEntity>>
+      = billDao.getUnpaidBills()
+
+  Functions:
+
+    suspend fun save(bill: BillEntity): Long
+      Validates:
+        - name is not blank
+        - dueDayOfMonth in 1..31
+        - intervalMonths >= 1
+        - amountCents >= 0
+      Computes (or recomputes) bill.nextDueMs:
+        bill = bill.copy(nextDueMs = DateUtils.nextDueDateMs(
+            bill.dueDayOfMonth, bill.intervalMonths))
+      Sets createdMs on insert (id == 0L) or updatedMs on update.
+      Returns new row ID on insert; bill.id on update.
+
+    suspend fun markPaid(billId: Long)
+      Calls billDao.markPaid(billId, DateUtils.nowMs()).
+      Then loads the bill, recomputes nextDueMs by advancing one full
+      intervalMonths cycle, and saves the updated nextDueMs so the bill
+      is ready for the next cycle:
+        val bill = billDao.getBillById(billId) ?: return
+        val advancedDue = DateUtils.nextDueDateMs(
+            bill.dueDayOfMonth, bill.intervalMonths)
+        billDao.updateBill(bill.copy(
+            isPaid = false,
+            nextDueMs = advancedDue,
+            updatedMs = DateUtils.nowMs()
+        ))
+      This resets isPaid to false for the next cycle immediately.
+
+    suspend fun delete(bill: BillEntity)
+      Calls billDao.deleteBill(bill).
+      Calls alertDao.deleteAlertsForParent(bill.id, "bill").
+
+    suspend fun getById(id: Long): BillEntity?
+      Delegates to billDao.getBillById(id).
+
+    fun getBillsDueInRange(fromMs: Long, toMs: Long): Flow<List<BillEntity>>
+      Delegates to billDao.getBillsDueInRange(fromMs, toMs).
+
+    suspend fun totalUnpaidCentsUpTo(endMs: Long): Long
+      Returns billDao.sumUnpaidAmountCentsUpTo(endMs) ?: 0L
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/data/repository/AttachmentRepository.kt
+Role: Manages captured file records. Links files to parents, tracks upload
+      status, and provides upload queue stream.
+
+  Class: AttachmentRepository(
+    private val attachmentDao: AttachmentDao
+  )
+
+  Properties:
+    val allAttachments: Flow<List<AttachmentEntity>>
+      = attachmentDao.getAllAttachments()
+
+    val pendingUploads: Flow<List<AttachmentEntity>>
+      = attachmentDao.getPendingUploads()
+
+    val pendingBudgetBlasterSends: Flow<List<AttachmentEntity>>
+      = attachmentDao.getPendingBudgetBlasterSends()
+
+  Functions:
+
+    suspend fun save(attachment: AttachmentEntity): Long
+      Validates localPath is not blank.
+      Resolves mimeType if blank: sets it from FileUtils.getMimeType(File(attachment.localPath)).
+      Resolves attachmentType if blank: sets it from
+        AttachmentType.fromMimeType(attachment.mimeType).name
+      Sets fileSizeBytes from File(attachment.localPath).length() if 0.
+      Calls attachmentDao.insertAttachment(attachment).
+      Returns new row ID.
+
+    suspend fun markUploaded(id: Long, destination: String)
+      Calls attachmentDao.markUploaded(id, DateUtils.nowMs(), destination).
+
+    suspend fun markSentToBudgetBlaster(id: Long)
+      Calls attachmentDao.markSentToBudgetBlaster(id).
+
+    suspend fun delete(attachment: AttachmentEntity)
+      Calls attachmentDao.deleteAttachment(attachment).
+      Calls FileUtils.deleteFile(File(attachment.localPath)).
+      This is the only place a capture file is deleted from disk — ensures
+      DB record and file stay in sync.
+
+    suspend fun getById(id: Long): AttachmentEntity?
+      Delegates to attachmentDao.getAttachmentById(id).
+
+    fun getForParent(parentId: Long, parentType: String): Flow<List<AttachmentEntity>>
+      Delegates to attachmentDao.getAttachmentsForParent(parentId, parentType).
+
+--------------------------------------------------------------------------------
+DATA FLOW
+--------------------------------------------------------------------------------
+User action (UI) -> ViewModel calls repository.save() / markPaid() / delete()
+  -> Repository validates + transforms -> DAO write -> SQLite
+  -> Room invalidates Flow -> DAO Flow re-emits -> Repository Flow re-emits
+  -> ViewModel StateFlow updates -> Fragment UI refreshes
+
+For BillRepository.markPaid():
+  UI taps "Mark Paid" -> BillsViewModel.markPaid(billId)
+  -> BillRepository.markPaid(billId)
+  -> billDao.markPaid(billId, now) [sets isPaid=1]
+  -> billDao.getBillById(billId) [loads updated bill]
+  -> DateUtils.nextDueDateMs() [computes next cycle]
+  -> billDao.updateBill(bill.copy(isPaid=false, nextDueMs=next))
+  -> Room emits updated bill list -> BillsFragment RecyclerView refreshes
+
+--------------------------------------------------------------------------------
+INTERFACES EXPOSED
+--------------------------------------------------------------------------------
+All three repository classes are instantiated in SchedulaizerApp (C-1) and
+accessed by ViewModels via SchedulaizerApp.get(context).[repository name].
+
+EventRepository: save, delete, getById, allEvents, upcomingEvents,
+                 getEventsInRange, getByPriority, countInRange
+BillRepository:  save, delete, getById, markPaid, allBills, unpaidBills,
+                 getBillsDueInRange, totalUnpaidCentsUpTo
+AttachmentRepository: save, delete, getById, markUploaded, markSentToBudgetBlaster,
+                      allAttachments, pendingUploads, pendingBudgetBlasterSends,
+                      getForParent
+
+--------------------------------------------------------------------------------
+SAFETY & SECURITY NOTES
+--------------------------------------------------------------------------------
+- AttachmentRepository.delete() always deletes the physical file AND the DB
+  record together. No orphaned files on disk.
+- BillRepository.save() validates amountCents >= 0 — no negative bill amounts.
+- EventRepository.save() validates endMs >= startMs — no backwards time windows.
+- All validation throws IllegalArgumentException with a descriptive message.
+  ViewModels must catch this and display an appropriate error to the user.
+
+--------------------------------------------------------------------------------
+UNIT TESTS — WHAT TO VERIFY
+--------------------------------------------------------------------------------
+- EventRepository.save() with a blank title throws IllegalArgumentException.
+- EventRepository.save() with endMs < startMs throws IllegalArgumentException.
+- BillRepository.save() correctly computes nextDueMs via DateUtils.
+- BillRepository.markPaid() resets isPaid to false for the next cycle and
+  advances nextDueMs by intervalMonths.
+- BillRepository.totalUnpaidCentsUpTo() returns 0 when there are no unpaid bills.
+- AttachmentRepository.save() auto-fills mimeType and fileSizeBytes when blank/0.
+- AttachmentRepository.delete() removes the entity from the DB
+  (tested with in-memory DB from D-3).
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] EventRepository.kt compiles with all 7 functions/properties listed.
+[ ] BillRepository.kt compiles with all 7 functions/properties listed.
+[ ] AttachmentRepository.kt compiles with all 7 functions/properties listed.
+[ ] BillRepository.markPaid() advances nextDueMs correctly — unit test passes.
+[ ] AttachmentRepository.delete() is the single point for on-disk file deletion.
+[ ] All validation rules throw IllegalArgumentException with non-empty messages.
+[ ] ./gradlew :app:compileDebugKotlin passes for all repository files.
+[ ] Unit tests for validation and markPaid cycling pass.
+================================================================================

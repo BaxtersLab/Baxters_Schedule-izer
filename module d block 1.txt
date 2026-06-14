@@ -1,0 +1,296 @@
+================================================================================
+BLOCK D-1 — ROOM ENTITIES (DATA TABLES)
+Module D: Data Layer (Room)
+================================================================================
+
+BLOCK ID:       D-1
+MODULE:         D — Data Layer (Room)
+CRATE:          com.baxter.schedulaizer.data.db.entity
+DEPENDS ON:     C-1, C-2
+BUILD ORDER:    8 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block defines all five Room entity data classes — the five SQLite tables
+that store the app's persistent data. After this block, every field, type, and
+constraint for EventEntity, BillEntity, MemoEntity, AttachmentEntity, and
+AlertEntity is locked in. No DAO or Repository writes any data until these
+are in place.
+
+This block does NOT create DAOs (D-2), the Database class (D-3),
+or Repositories (D-4).
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+
+FILE: app/src/main/java/com/baxter/schedulaizer/data/db/entity/EventEntity.kt
+Role: Represents one calendar event (or recurring event instance).
+
+  @Entity(tableName = "events")
+  data class EventEntity
+
+  Fields:
+    id: Long
+      @PrimaryKey(autoGenerate = true). Default 0L.
+      Room assigns on insert.
+
+    title: String
+      Required. The event's display name. Max 200 chars (enforced in ViewModel).
+
+    description: String
+      Optional long-form notes. Empty string if not provided.
+
+    startMs: Long
+      Epoch ms of event start. Required. Must be > 0.
+
+    endMs: Long
+      Epoch ms of event end. Required. Must be >= startMs.
+
+    isAllDay: Boolean
+      If true, startMs and endMs represent midnight boundaries.
+      Default false.
+
+    category: String
+      Stores EventCategory.name (e.g. "WORK", "BILLS").
+      Not a foreign key — denormalized for query simplicity.
+      Default "PERSONAL".
+
+    priority: Int
+      Stores PriorityLevel ordinal (0=CRITICAL, 3=LOW). Default 2 (NORMAL).
+
+    recurrenceRule: String
+      Stores RecurrenceType.name (e.g. "MONTHLY").
+      Empty string means NONE. Default "".
+
+    alertOffsetMinutes: Int
+      How many minutes before startMs to fire an alert.
+      0 means no alert. Default 15.
+
+    createdMs: Long
+      Epoch ms of insertion. Set by Repository on insert, never updated.
+
+    updatedMs: Long
+      Epoch ms of last update. Set by Repository on every update.
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/data/db/entity/BillEntity.kt
+Role: Represents one recurring bill.
+
+  @Entity(tableName = "bills")
+  data class BillEntity
+
+  Fields:
+    id: Long
+      @PrimaryKey(autoGenerate = true). Default 0L.
+
+    name: String
+      Bill name (e.g. "Electric Bill", "Netflix"). Max 100 chars.
+
+    amountCents: Long
+      Bill amount in integer cents. $12.99 = 1299L.
+      0L if amount is unknown/variable.
+
+    dueDayOfMonth: Int
+      Day of month the bill is due (1–31).
+      Validated: value 29–31 may be adjusted to last day of month at runtime
+      by DateUtils.nextDueDateMs().
+
+    intervalMonths: Int
+      Billing cycle in months. 1 = monthly, 3 = quarterly, 12 = annual.
+      Default 1.
+
+    nextDueMs: Long
+      Epoch ms of next due date. Computed by DateUtils.nextDueDateMs() and
+      stored by BillRepository on create/update/mark-paid.
+
+    isPaid: Boolean
+      Whether the current cycle has been paid. Default false.
+      Reset to false by BillRepository when the billing cycle rolls over.
+
+    priority: Int
+      PriorityLevel ordinal. Default 2 (NORMAL).
+
+    category: String
+      EventCategory.name. Default "BILLS".
+
+    notes: String
+      Optional freeform note (bank name, account last 4, etc.).
+      NEVER store passwords or full account numbers.
+      Default "".
+
+    alertOffsetMinutes: Int
+      Minutes before nextDueMs to fire a reminder. Default 1440 (24 hours).
+
+    createdMs: Long
+    updatedMs: Long
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/data/db/entity/MemoEntity.kt
+Role: A text or voice note that may be attached to an event, bill, or standalone.
+
+  @Entity(tableName = "memos")
+  data class MemoEntity
+
+  Fields:
+    id: Long
+      @PrimaryKey(autoGenerate = true). Default 0L.
+
+    parentId: Long
+      ID of the parent event or bill. 0L if standalone (no parent).
+
+    parentType: String
+      "event", "bill", or "" if standalone.
+
+    content: String
+      The text content of the memo. May be empty if it is a voice memo
+      (the voice file is an AttachmentEntity linked to the same parentId).
+
+    title: String
+      Short display title. Auto-generated as "Note – [date]" if not provided.
+
+    priority: Int
+      PriorityLevel ordinal. Default 2 (NORMAL).
+
+    createdMs: Long
+    updatedMs: Long
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/data/db/entity/AttachmentEntity.kt
+Role: A file (image, audio, document) linked to an event, bill, or memo.
+
+  @Entity(tableName = "attachments")
+  data class AttachmentEntity
+
+  Fields:
+    id: Long
+      @PrimaryKey(autoGenerate = true). Default 0L.
+
+    parentId: Long
+      ID of the parent record. 0L if not yet linked.
+
+    parentType: String
+      "event", "bill", or "memo".
+
+    localPath: String
+      Absolute path to the file in internal storage.
+      Set at capture time. Never null after creation.
+
+    mimeType: String
+      MIME type string (e.g. "image/jpeg", "audio/m4a").
+      Set by FileUtils.getMimeType().
+
+    attachmentType: String
+      AttachmentType.name (e.g. "RECEIPT_IMAGE"). Stored as String.
+
+    fileName: String
+      Display name of the file (e.g. "receipt_1234567890.jpg").
+
+    fileSizeBytes: Long
+      Size of the file in bytes at capture time.
+
+    capturedMs: Long
+      Epoch ms when the file was captured.
+
+    uploadedMs: Long
+      Epoch ms when the file was successfully uploaded to homelab.
+      -1L if not yet uploaded.
+
+    uploadDestination: String
+      "homelab" or "budget_blaster" or "" if not yet uploaded.
+
+    isSentToBudgetBlaster: Boolean
+      True if this attachment was successfully sent to Budget Blaster.
+      Default false.
+
+    createdMs: Long
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/data/db/entity/AlertEntity.kt
+Role: A scheduled alert/reminder linked to an event or bill.
+
+  @Entity(tableName = "alerts")
+  data class AlertEntity
+
+  Fields:
+    id: Long
+      @PrimaryKey(autoGenerate = true). Default 0L.
+
+    parentId: Long
+      ID of the event or bill this alert belongs to.
+
+    parentType: String
+      "event" or "bill".
+
+    title: String
+      Alert notification title (e.g. "Dentist Appointment").
+
+    body: String
+      Alert notification body (e.g. "Starting in 15 minutes").
+
+    fireAtMs: Long
+      Epoch ms when this alert should fire. Set at schedule time.
+
+    isActive: Boolean
+      True if the alert is still pending. Set to false after firing or
+      when the parent event/bill is deleted. Default true.
+
+    isSnoozed: Boolean
+      True if the alert was snoozed. Default false.
+
+    snoozeUntilMs: Long
+      If snoozed, the epoch ms of the new fire time.
+      -1L if not snoozed.
+
+    alarmManagerRequestCode: Int
+      The request code used with AlarmManager so it can be cancelled.
+      Derived from id when the alert is first scheduled.
+
+    createdMs: Long
+
+--------------------------------------------------------------------------------
+DATA FLOW
+--------------------------------------------------------------------------------
+EventEntity, BillEntity, MemoEntity are created by the user via UI or voice.
+AttachmentEntity is created by CaptureFragment when a file is captured.
+AlertEntity is created by AlertScheduler when an event or bill is saved.
+
+All entities flow:
+  Repository.insert() -> DAO.insert() -> Room -> SQLite table
+
+On read: DAO.getAll() returns Flow<List<Entity>> -> Repository -> ViewModel ->
+  Fragment observes StateFlow -> RecyclerView or Calendar grid updates.
+
+--------------------------------------------------------------------------------
+DESIGN DECISIONS
+--------------------------------------------------------------------------------
+- Monetary amounts stored as Long cents — see A-1 Decision 6.
+- parentType stored as String (not foreign key) to avoid complex multi-table
+  joins. The app is single-user, data volume is small, denormalization is fine.
+- AlertEntity stores alarmManagerRequestCode as Int so the alarm can be
+  cancelled by ID without a separate lookup table.
+- uploadedMs uses -1L as "not uploaded" sentinel rather than nullable Long,
+  to simplify Room queries (WHERE uploadedMs = -1 to find pending uploads).
+
+--------------------------------------------------------------------------------
+UNIT TESTS — WHAT TO VERIFY
+--------------------------------------------------------------------------------
+- BillEntity with dueDayOfMonth=31 can be inserted and retrieved without error.
+- AttachmentEntity with uploadedMs=-1L can be queried with
+  WHERE uploadedMs = -1 correctly.
+- All entities serialize/deserialize through Room without data loss.
+  (Covered by Room testing in D-3.)
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] EventEntity.kt compiles with all 11 fields listed above.
+[ ] BillEntity.kt compiles with all 12 fields listed above.
+[ ] MemoEntity.kt compiles with all 8 fields listed above.
+[ ] AttachmentEntity.kt compiles with all 13 fields listed above.
+[ ] AlertEntity.kt compiles with all 12 fields listed above.
+[ ] All @Entity annotations include correct tableName values.
+[ ] All @PrimaryKey fields use autoGenerate = true with default 0L.
+[ ] ./gradlew :app:compileDebugKotlin passes with zero errors on all 5 files.
+================================================================================

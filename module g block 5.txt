@@ -1,0 +1,326 @@
+================================================================================
+BLOCK G-5 — TRANSFER FRAGMENT, AGENT FRAGMENT & VIEW MODELS
+Module G: UI Layer
+================================================================================
+
+BLOCK ID:       G-5
+MODULE:         G — UI Layer
+CRATE:          com.baxter.schedulaizer.ui.transfer + com.baxter.schedulaizer.ui.agent
+DEPENDS ON:     G-1, E-3, F-3
+BUILD ORDER:    22 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This is the final UI block. It implements:
+  - TransferFragment + TransferViewModel: upload queue status, homelab tunnel
+    state, and Budget Blaster send queue.
+  - AgentFragment + AgentViewModel: the voice agent chat interface with mic
+    button, transcript scroll view, and TextToSpeech response playback.
+
+After this block, all 5 tabs are fully functional and the entire Schedualizer
+feature set is implemented. The APK is ready for M8 (polish) and M9 (release).
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+
+FILE: app/src/main/java/com/baxter/schedulaizer/ui/transfer/TransferViewModel.kt
+Role: State for the Transfer tab.
+
+  Class: TransferViewModel(application: Application) : AndroidViewModel(application)
+
+  private val attachRepo = SchedulaizerApp.get(application).attachmentRepository
+
+  State:
+    val pendingUploads: StateFlow<List<AttachmentEntity>>
+      = attachRepo.pendingUploads.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    val pendingBudgetBlasterSends: StateFlow<List<AttachmentEntity>>
+      = attachRepo.pendingBudgetBlasterSends
+          .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    val tunnelState: StateFlow<String>
+      Polls TransportBindings.rd_get_tunnel_state() every 2 seconds.
+      Implemented as:
+        flow {
+          while (true) {
+            emit(TransportBindings.rd_get_tunnel_state())
+            delay(2_000)
+          }
+        }.stateIn(viewModelScope, SharingStarted.Lazily, "{}")
+
+    val isConnected: StateFlow<Boolean>
+      = flow {
+          while (true) {
+            emit(TransportBindings.isConnected())
+            delay(2_000)
+          }
+        }.stateIn(viewModelScope, SharingStarted.Lazily, false)
+
+  Functions:
+    fun getHomelabDestDir(context: Context): String
+      = FileTransferManager.getDestDir(context)
+
+    fun getEndpoint(context: Context): String
+      Reads PREF_BUDGET_BLASTER_ENDPOINT from SharedPreferences.
+      Returns the configured endpoint string.
+
+    suspend fun retryAll(context: Context)
+      For each item in pendingUploads: the upload queue is automatic.
+      This function just ensures SchedulaizerService is running so the
+      observer loop resumes.
+      Starts SchedulaizerService if not running (same logic as MainActivity).
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/ui/transfer/TransferFragment.kt
+Role: Shows upload queues, tunnel connection status, and homelab configuration.
+
+  Class: TransferFragment : Fragment(R.layout.fragment_transfer)
+
+  UI components (FragmentTransferBinding):
+    textTunnelStatus: TextView        — "Connected" (green) / "Disconnected" (red)
+    textHomelabDest: TextView         — "Destination: /schedualizer/"
+    textEndpoint: TextView            — "Budget Blaster: http://192.168.1.x:7890/..."
+    textUploadQueueCount: TextView    — "X files pending homelab upload"
+    textBBQueueCount: TextView        — "X files pending Budget Blaster"
+    recyclerPendingUploads: RecyclerView — list of pending upload items
+    btnRetry: Button                  — "Retry uploads"
+    btnSettings: Button               — "Configure endpoints" (opens a Settings dialog)
+
+  onViewCreated():
+    Observes viewModel.isConnected -> updates textTunnelStatus color/text.
+    Observes viewModel.pendingUploads -> updates count + RecyclerView adapter.
+    Observes viewModel.pendingBudgetBlasterSends -> updates BB count.
+    Updates textHomelabDest and textEndpoint from viewModel helper functions.
+    btnRetry -> viewModel.retryAll(requireContext()).
+    btnSettings -> shows a settings AlertDialog (see Settings Dialog below).
+
+  PendingUploadAdapter (inner class):
+    Shows each AttachmentEntity: filename, type icon, file size, capture date.
+    No interaction beyond display — uploads are managed automatically.
+
+  Settings Dialog (shown on btnSettings click):
+    AlertDialog with 2 EditText fields:
+      Field 1: "Homelab destination path" pre-filled from getHomelabDestDir().
+      Field 2: "Budget Blaster endpoint" pre-filled from getEndpoint().
+    "Save" button:
+      Writes both values to SharedPreferences (PREF_HOMELAB_DEST_DIR,
+      PREF_BUDGET_BLASTER_ENDPOINT).
+    "Cancel" button: dismisses without saving.
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/ui/agent/AgentViewModel.kt
+Role: State for the Voice Agent tab.
+
+  Class: AgentViewModel(application: Application) : AndroidViewModel(application)
+
+  private val dispatcher = AgentDispatcher(
+      SchedulaizerApp.get(application).eventRepository,
+      SchedulaizerApp.get(application).billRepository,
+      SchedulaizerApp.get(application).attachmentRepository,
+      AlertScheduler,
+      application
+  )
+  private var tts: TextToSpeech? = null
+
+  State:
+    private val _transcript = MutableStateFlow<List<Pair<String, String>>>(emptyList())
+    val transcript: StateFlow<List<Pair<String, String>>> = _transcript.asStateFlow()
+      Each Pair: first = user utterance, second = agent response.
+
+    val voiceStatus: StateFlow<VoiceState.Status> = VoiceState.status
+
+  Functions:
+
+    fun initTts(context: Context)
+      Initializes TextToSpeech:
+        tts = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                tts?.language = Locale.getDefault()
+            }
+        }
+
+    fun onVoiceResult(utterance: String)
+      Launches viewModelScope.launch(Dispatchers.IO):
+        VoiceState.setProcessing()
+        val intent = IntentParser.parse(utterance)
+        val response = dispatcher.dispatch(intent)
+        val updated = _transcript.value + Pair(utterance, response)
+        _transcript.value = updated
+        VoiceState.setIdle()
+        // Speak response on main thread:
+        withContext(Dispatchers.Main) { speak(response) }
+
+    fun speak(text: String)
+      Calls tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, null).
+
+    fun clearTranscript()
+      _transcript.value = emptyList()
+
+    override fun onCleared()
+      tts?.shutdown()
+      super.onCleared()
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/ui/agent/AgentFragment.kt
+Role: Voice agent chat UI.
+
+  Class: AgentFragment : Fragment(R.layout.fragment_agent)
+
+  Private:
+    private var broadcastReceiver: BroadcastReceiver? = null
+
+  UI components (FragmentAgentBinding):
+    recyclerTranscript: RecyclerView   — scrolling transcript (newest at bottom)
+    btnMic: FloatingActionButton       — large mic button (hold/tap to talk)
+    textVoiceStatus: TextView          — "Listening..." / "Processing..." / "Ready"
+    btnClearTranscript: ImageButton    — clears the transcript list
+
+  Lifecycle:
+
+    onViewCreated():
+      viewModel.initTts(requireContext()).
+      RecyclerView with TranscriptAdapter (vertical, newest at bottom).
+      Observes viewModel.transcript -> submits to adapter, scrolls to last item.
+      Observes viewModel.voiceStatus -> updates textVoiceStatus and btnMic icon/tint.
+      btnMic click:
+        If status == IDLE:
+          Check RECORD_AUDIO permission.
+          If granted: start VoiceListenerService (ACTION_START_LISTENING).
+          If not granted: show rationale Snackbar.
+        If status == LISTENING:
+          Stop VoiceListenerService (ACTION_STOP_LISTENING).
+      btnClearTranscript -> viewModel.clearTranscript().
+
+    onStart():
+      Registers broadcastReceiver for ACTION_VOICE_RESULT:
+        On receive: reads EXTRA_RECOGNIZED_TEXT.
+          If error extra present: VoiceState.setError(message).
+          Else: viewModel.onVoiceResult(text).
+        LocalBroadcastManager.getInstance().registerReceiver().
+
+    onStop():
+      LocalBroadcastManager.getInstance().unregisterReceiver(broadcastReceiver).
+      Stops listening: Intent(ACTION_STOP_LISTENING) -> startService().
+
+  TranscriptAdapter (inner class):
+    Displays Pair<String,String> — user utterance on right (blue bubble),
+    agent response on left (grey bubble).
+    Uses two ViewHolder types: USER_BUBBLE and AGENT_BUBBLE.
+    Layouts: item_transcript_user.xml, item_transcript_agent.xml.
+
+
+FILE: app/src/main/res/layout/fragment_transfer.xml
+  Structure:
+    ScrollView
+      LinearLayout (vertical, padding 16dp)
+        LinearLayout (horizontal, status row)
+          ImageView (status dot — green/red)
+          textTunnelStatus
+        textHomelabDest
+        textEndpoint
+        textUploadQueueCount
+        textBBQueueCount
+        RecyclerView (id: recyclerPendingUploads, max height 240dp)
+        LinearLayout (horizontal, buttons)
+          btnRetry
+          btnSettings
+
+
+FILE: app/src/main/res/layout/fragment_agent.xml
+  Structure:
+    ConstraintLayout
+      RecyclerView (id: recyclerTranscript, constrain top to top, bottom to status bar)
+      LinearLayout (horizontal, bottom strip)
+        textVoiceStatus (weight 1)
+        btnClearTranscript (ImageButton, icon: ic_clear)
+      FloatingActionButton (id: btnMic, large, icon: ic_mic, bottom-center)
+
+
+FILE: app/src/main/res/layout/item_transcript_user.xml
+  ConstraintLayout
+    CardView (align right, background colorPrimary)
+      TextView (id: textUserUtterance, text color white)
+
+
+FILE: app/src/main/res/layout/item_transcript_agent.xml
+  ConstraintLayout
+    CardView (align left, background #E0E0E0)
+      TextView (id: textAgentResponse, text color black)
+
+--------------------------------------------------------------------------------
+DATA FLOW
+--------------------------------------------------------------------------------
+Voice agent full pipeline:
+  User taps btnMic -> VoiceListenerService starts
+  -> User speaks -> SpeechRecognizer recognizes
+  -> ACTION_VOICE_RESULT broadcast -> AgentFragment BroadcastReceiver
+  -> viewModel.onVoiceResult(text) -> IntentParser.parse() -> AgentDispatcher.dispatch()
+  -> response String -> _transcript updated -> TranscriptAdapter updates
+  -> tts.speak(response) -> user hears the response
+
+Transfer tab refresh:
+  Every 2 seconds: TransferViewModel polls TransportBindings.isConnected()
+  -> textTunnelStatus shows green/red
+  -> pendingUploads Flow from Room updates automatically on DB changes
+
+--------------------------------------------------------------------------------
+DESIGN DECISIONS
+--------------------------------------------------------------------------------
+- TextToSpeech is initialized in AgentViewModel (not Fragment) so the TTS engine
+  persists across configuration changes (screen rotation). The engine is shutdown
+  in onCleared().
+- BroadcastReceiver is registered in onStart/onStop (not onResume/onPause) to
+  stay active when the user is on the Agent tab but the screen briefly turns off.
+- Transcript is displayed with user bubbles right-aligned, agent bubbles
+  left-aligned — familiar chat UI pattern requires no user documentation.
+- tunnelState polling at 2-second intervals is lightweight (one JNI call) and
+  provides responsive feedback without draining battery.
+
+--------------------------------------------------------------------------------
+SAFETY & SECURITY NOTES
+--------------------------------------------------------------------------------
+- RECORD_AUDIO permission is checked in AgentFragment before starting the
+  VoiceListenerService on every mic tap. Permission can be revoked between
+  taps without crashing.
+- BroadcastReceiver is unregistered in onStop() — no audio results are
+  processed after the user leaves the tab.
+- TextToSpeech speaks the agent's response string. This string is generated
+  by AgentDispatcher from controlled templates, not from unsanitized user input
+  or database content — TTS injection is not a concern.
+
+--------------------------------------------------------------------------------
+UNIT TESTS — WHAT TO VERIFY
+--------------------------------------------------------------------------------
+- AgentViewModel.onVoiceResult("mark electric paid") calls dispatcher.dispatch()
+  and appends a Pair to transcript.
+- AgentViewModel.transcript is empty after clearTranscript().
+- TransferViewModel.isConnected emits false when TransportBindings returns 0.
+- TransferViewModel.pendingUploads emits only attachments with uploadedMs = -1L.
+- Settings dialog saves PREF_HOMELAB_DEST_DIR to SharedPreferences correctly.
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] TransferViewModel.kt compiles with all 4 state flows and 3 functions.
+[ ] TransferFragment.kt compiles and shows tunnel status, queue counts.
+[ ] Settings dialog saves both prefs keys to SharedPreferences.
+[ ] AgentViewModel.kt compiles with onVoiceResult, speak, clearTranscript,
+    initTts, onCleared.
+[ ] AgentFragment.kt compiles with BroadcastReceiver register/unregister
+    in onStart/onStop.
+[ ] Mic button checks RECORD_AUDIO permission before starting service.
+[ ] TranscriptAdapter uses two ViewHolder types (user/agent bubbles).
+[ ] All 7 layout XML files for this block exist.
+[ ] ./gradlew :app:assembleDebug builds with zero errors.
+[ ] App runs end-to-end on emulator:
+    - Calendar tab shows events, FAB opens EventEditActivity.
+    - Bills tab shows bills, Mark Paid works.
+    - Capture tab: text note saves and appears in recent list.
+    - Transfer tab: shows "Disconnected" until tunnel is established.
+    - Agent tab: typing (mocked) voice result updates transcript.
+
+================================================================================
+END OF MODULE BLOCKS — BUILD ORDER COMPLETE (1 of 22 through 22 of 22)
+================================================================================

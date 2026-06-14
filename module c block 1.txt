@@ -1,0 +1,241 @@
+================================================================================
+BLOCK C-1 — ENUMS, CONSTANTS & APP CLASS
+Module C: Core Shared Types
+================================================================================
+
+BLOCK ID:       C-1
+MODULE:         C — Core Shared Types
+CRATE:          com.baxter.schedulaizer.util + SchedulaizerApp
+DEPENDS ON:     B-3
+BUILD ORDER:    6 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block creates the enums, constants, and the Application subclass that
+every other part of the app depends on. After this block, all shared vocabulary
+(priority levels, categories, recurrence types, notification channel IDs,
+intent action keys) is defined in one place. The Application class sets up
+the Room database singleton so ViewModels and Services can access it.
+
+This block does NOT define data classes or database schema (Module D), utility
+functions (C-2), or any UI components.
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+
+FILE: app/src/main/java/com/baxter/schedulaizer/util/PriorityLevel.kt
+Role: Defines the four-tier priority system used on every event, bill, and memo.
+
+  Enum class: PriorityLevel
+    Values (in descending urgency order):
+      CRITICAL  — value 0 — color hint: red (#D32F2F)
+                  Use: overdue bills, same-day critical appointments
+      HIGH      — value 1 — color hint: orange (#F57C00)
+                  Use: upcoming bills within 3 days, important appointments
+      NORMAL    — value 2 — color hint: blue (#1565C0)
+                  Use: standard calendar events and bills
+      LOW       — value 3 — color hint: grey (#757575)
+                  Use: optional reminders, nice-to-have tasks
+
+    Companion object:
+      fun fromInt(value: Int): PriorityLevel
+        Maps an integer (stored in Room) back to the enum constant.
+        Returns NORMAL if the value is out of range — never throws.
+
+    Property: colorRes — a suggested Android color resource hint stored as
+              a hex string. Not an actual @ColorRes — just documentation.
+    Property: displayName — human-readable string for UI labels.
+
+FILE: app/src/main/java/com/baxter/schedulaizer/util/EventCategory.kt
+Role: Enum for calendar event and bill categorization.
+
+  Enum class: EventCategory
+    Values:
+      WORK        — displayName "Work"
+      PERSONAL    — displayName "Personal"
+      BILLS       — displayName "Bills"
+      MEDICAL     — displayName "Medical"
+      OTHER       — displayName "Other"
+
+    Companion object:
+      fun fromString(name: String): EventCategory
+        Case-insensitive lookup. Returns OTHER if not found.
+
+FILE: app/src/main/java/com/baxter/schedulaizer/util/RecurrenceType.kt
+Role: Defines how often a bill or event repeats.
+
+  Enum class: RecurrenceType
+    Values:
+      NONE        — displayName "One-time"
+      DAILY       — displayName "Daily"
+      WEEKLY      — displayName "Weekly"
+      MONTHLY     — displayName "Monthly"
+      QUARTERLY   — displayName "Quarterly"  (every 3 months)
+      YEARLY      — displayName "Yearly"
+
+    Companion object:
+      fun fromString(name: String): RecurrenceType
+        Returns NONE if not found.
+
+FILE: app/src/main/java/com/baxter/schedulaizer/util/AttachmentType.kt
+Role: Classifies what kind of file an attachment is.
+
+  Enum class: AttachmentType
+    Values:
+      RECEIPT_IMAGE  — displayName "Receipt Photo"
+      FIELD_PHOTO    — displayName "Field Photo"
+      SCREENSHOT     — displayName "Screenshot"
+      VOICE_MEMO     — displayName "Voice Memo"
+      TEXT_NOTE      — displayName "Text Note"
+      DOCUMENT       — displayName "Document"
+
+    Companion object:
+      fun fromMimeType(mime: String): AttachmentType
+        Maps common MIME types to AttachmentType:
+          "image/*"         -> RECEIPT_IMAGE (default for images)
+          "audio/m4a"       -> VOICE_MEMO
+          "audio/mpeg"      -> VOICE_MEMO
+          "text/plain"      -> TEXT_NOTE
+          "application/pdf" -> DOCUMENT
+          anything else     -> FIELD_PHOTO
+
+FILE: app/src/main/java/com/baxter/schedulaizer/util/AppConstants.kt
+Role: Single source of truth for string constants used across the app.
+
+  Object: AppConstants
+    Notification channels:
+      CHANNEL_ALERTS = "schedualizer_alerts"
+        Used by AlertNotificationBuilder for event/bill reminders.
+      CHANNEL_SERVICE = "schedualizer_service"
+        Used by SchedulaizerService for the persistent foreground notification.
+      CHANNEL_TRANSFER = "schedualizer_transfer"
+        Used by FileTransferManager for upload progress notifications.
+
+    Intent action keys:
+      ACTION_FIRE_ALERT = "com.baxter.schedulaizer.FIRE_ALERT"
+        Sent by AlarmManager to AlertReceiver when an exact alarm fires.
+      ACTION_SNOOZE_ALERT = "com.baxter.schedulaizer.SNOOZE_ALERT"
+        Notification action to snooze a fired alert by 1 hour.
+      ACTION_DISMISS_ALERT = "com.baxter.schedulaizer.DISMISS_ALERT"
+        Notification action to dismiss a fired alert permanently.
+
+    Intent extra keys:
+      EXTRA_ALERT_ID = "alert_id"           (Long)
+      EXTRA_EVENT_ID = "event_id"           (Long)
+      EXTRA_BILL_ID  = "bill_id"            (Long)
+      EXTRA_ALERT_TITLE = "alert_title"     (String)
+      EXTRA_ALERT_BODY  = "alert_body"      (String)
+
+    SharedPreferences keys:
+      PREFS_NAME = "schedualizer_prefs"
+      PREF_HOMELAB_HOST = "homelab_host"
+        Default: "192.168.1.100"
+      PREF_HOMELAB_PORT = "homelab_port"
+        Default: 7891 (RemoteDexter tunnel port)
+      PREF_BUDGET_BLASTER_ENDPOINT = "budget_blaster_endpoint"
+        Default: "http://192.168.1.100:7890/api/receipt"
+
+    Upload queue constants:
+      UPLOAD_WORKER_TAG = "file_upload_worker"
+      MAX_UPLOAD_RETRY = 3
+
+FILE: app/src/main/java/com/baxter/schedulaizer/SchedulaizerApp.kt
+Role: Application subclass. Creates the Room database singleton and provides
+      global access to repositories.
+
+  Class: SchedulaizerApp : Application()
+
+    Properties (lazy):
+      database: SchedulaizerDatabase
+        Created via Room.databaseBuilder(this, SchedulaizerDatabase::class.java,
+        "schedualizer.db").build()
+        Lazy — not created until first access.
+
+      eventRepository: EventRepository
+        Instantiated with database.eventDao()
+
+      billRepository: BillRepository
+        Instantiated with database.billDao(), database.alertDao()
+
+      attachmentRepository: AttachmentRepository
+        Instantiated with database.attachmentDao()
+
+    companion object:
+      fun get(context: Context): SchedulaizerApp
+        Returns (context.applicationContext as SchedulaizerApp)
+        Used by ViewModels and Services to access repositories without
+        passing context chains.
+
+    onCreate():
+      Call super.onCreate().
+      Create all notification channels by calling a private
+      createNotificationChannels() method.
+
+    createNotificationChannels() — private:
+      Creates three NotificationChannels (API 26+):
+        1. CHANNEL_ALERTS: importance IMPORTANCE_HIGH, name "Reminders & Alerts"
+        2. CHANNEL_SERVICE: importance IMPORTANCE_LOW, name "Schedualizer Service"
+        3. CHANNEL_TRANSFER: importance IMPORTANCE_DEFAULT, name "File Transfers"
+      Registers them via NotificationManager.createNotificationChannels().
+      Safe to call multiple times — existing channels are not modified.
+
+--------------------------------------------------------------------------------
+INTERFACES EXPOSED
+--------------------------------------------------------------------------------
+- PriorityLevel.fromInt(Int): PriorityLevel — used by Room TypeConverters (D-3)
+  and RecyclerView item view bindings (G-2, G-3).
+- EventCategory.fromString(String): EventCategory — used by IntentParser (F-2).
+- RecurrenceType.fromString(String): RecurrenceType — used by IntentParser (F-2).
+- AttachmentType.fromMimeType(String): AttachmentType — used by FileUtils (C-2)
+  and CaptureFragment (G-4).
+- AppConstants: accessed directly as a Kotlin object — no instantiation needed.
+- SchedulaizerApp.get(context): SchedulaizerApp — used everywhere repositories
+  are needed (ViewModels, Services, Receivers).
+
+--------------------------------------------------------------------------------
+DESIGN DECISIONS
+--------------------------------------------------------------------------------
+- Priority stored as Int in Room, not as a String. Allows ORDER BY priority ASC
+  to sort CRITICAL first without string comparison.
+- Notification channels created in Application.onCreate(), not in Service or
+  Activity, to ensure they exist before any notification is posted.
+- SchedulaizerApp uses lazy {} for database and repositories — avoids creating
+  Room instances at static init time, which can cause ANR on some devices.
+
+--------------------------------------------------------------------------------
+SAFETY & SECURITY NOTES
+--------------------------------------------------------------------------------
+- AppConstants.PREF_BUDGET_BLASTER_ENDPOINT stores a LAN IP. This value is
+  never logged or included in crash reports.
+- No hardcoded IP addresses in AppConstants — all defaults are obviously local
+  (192.168.x.x) and clearly labeled as defaults to be changed by the user.
+
+--------------------------------------------------------------------------------
+UNIT TESTS — WHAT TO VERIFY
+--------------------------------------------------------------------------------
+- PriorityLevel.fromInt(0) returns CRITICAL.
+- PriorityLevel.fromInt(99) returns NORMAL (out-of-range fallback).
+- EventCategory.fromString("bills") returns BILLS (case-insensitive).
+- EventCategory.fromString("unknown") returns OTHER.
+- RecurrenceType.fromString("MONTHLY") returns MONTHLY.
+- AttachmentType.fromMimeType("audio/m4a") returns VOICE_MEMO.
+- AttachmentType.fromMimeType("image/jpeg") returns RECEIPT_IMAGE.
+- AttachmentType.fromMimeType("application/octet-stream") returns FIELD_PHOTO.
+- SchedulaizerApp.get(context) returns the Application instance without crash.
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] PriorityLevel.kt compiles with 4 enum values and fromInt() fallback.
+[ ] EventCategory.kt compiles with 5 values and case-insensitive fromString().
+[ ] RecurrenceType.kt compiles with 6 values.
+[ ] AttachmentType.kt compiles with 6 values and MIME mapping.
+[ ] AppConstants.kt compiles with all 3 channel IDs, all intent keys,
+    all extra keys, all prefs keys, and upload constants.
+[ ] SchedulaizerApp.kt compiles with lazy database, three repositories,
+    get() companion, and createNotificationChannels().
+[ ] ./gradlew :app:compileDebugKotlin passes with zero errors on these files.
+[ ] Unit tests for fromInt, fromString, fromMimeType pass.
+================================================================================

@@ -1,0 +1,6 @@
+Baxters Schedualizer is an apk app for android that helps user keep track of all calender events. 
+reoccuring monthly bills this app will be able to upload files to homelab pc like a simple file 
+transfer for reciept images field data ect. the app will have a button for a mic to speak to the
+ schedualizer chat agent that will help you mark your calenter and it will prompt alerts. priority marking system
+. works with baxters budget blaster intillegent reciept and accounting for budget balancing on windows  . 
+that way i can input screenshots . photos of reciepts. voice memos. text memos, set alerts and reminders

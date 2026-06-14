@@ -1,0 +1,211 @@
+================================================================================
+BLOCK G-1 — MAIN ACTIVITY & NAVIGATION GRAPH
+Module G: UI Layer
+================================================================================
+
+BLOCK ID:       G-1
+MODULE:         G — UI Layer
+CRATE:          com.baxter.schedulaizer.ui
+DEPENDS ON:     F-3, C-1
+BUILD ORDER:    18 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block creates MainActivity (the BottomNavigationView host) and the
+Navigation Component nav_graph.xml that wires all 5 tabs and their edit screens
+together. After this block, the app shell is navigable — all 5 tab fragments
+exist as stubs and the navigation graph is valid. The bottom nav bar is visible
+and functional. Edit activities are registered in the graph.
+
+This block also requests runtime permissions (RECORD_AUDIO, CAMERA,
+POST_NOTIFICATIONS) from MainActivity so they are handled before any tab
+needs them.
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+
+FILE: app/src/main/java/com/baxter/schedulaizer/ui/MainActivity.kt
+Role: Single-activity host. Manages BottomNavigationView and NavController.
+      Starts SchedulaizerService. Requests runtime permissions.
+
+  Class: MainActivity : AppCompatActivity()
+
+  Private properties:
+    binding: ActivityMainBinding  (ViewBinding — generated from activity_main.xml)
+    navController: NavController  (set in onCreate)
+
+  onCreate(savedInstanceState):
+    binding = ActivityMainBinding.inflate(layoutInflater)
+    setContentView(binding.root)
+    val navHostFragment = supportFragmentManager.findFragmentById(
+        R.id.nav_host_fragment) as NavHostFragment
+    navController = navHostFragment.navController
+    binding.bottomNav.setupWithNavController(navController)
+    startSchedulaizerService()
+    requestRuntimePermissions()
+
+  onSupportNavigateUp(): Boolean
+    return navController.navigateUp() || super.onSupportNavigateUp()
+
+  Private: startSchedulaizerService()
+    val intent = Intent(this, SchedulaizerService::class.java)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+        startForegroundService(intent)
+    else
+        startService(intent)
+
+  Private: requestRuntimePermissions()
+    Permissions to request (in one batch):
+      Manifest.permission.CAMERA
+      Manifest.permission.RECORD_AUDIO
+      (API 33+) Manifest.permission.POST_NOTIFICATIONS
+    Uses ActivityResultContracts.RequestMultiplePermissions.
+    On result: if any permission is denied, show a Snackbar explaining
+      what functionality is reduced (camera = no receipt capture,
+      microphone = no voice agent, notifications = no alert pop-ups).
+    Does NOT block the user from using the app if permissions are denied —
+    features that need the permission simply show an in-context message
+    when tapped.
+
+FILE: app/src/main/res/layout/activity_main.xml
+Role: Root layout for MainActivity.
+
+  Structure:
+    ConstraintLayout (root, match_parent x match_parent)
+      FragmentContainerView
+        id: nav_host_fragment
+        android:name: androidx.navigation.fragment.NavHostFragment
+        app:navGraph: @navigation/nav_graph
+        app:defaultNavHost: true
+        layout_width: match_parent
+        layout_height: 0dp
+        Constrain top to top of parent, bottom to top of bottomNav
+      BottomNavigationView
+        id: bottom_nav
+        layout_width: match_parent
+        layout_height: wrap_content
+        app:menu: @menu/bottom_nav_menu
+        Constrain bottom to bottom of parent
+
+FILE: app/src/main/res/menu/bottom_nav_menu.xml
+Role: Defines the 5 bottom navigation items.
+
+  Items:
+    item id=nav_calendar    title="Calendar"  icon=@drawable/ic_calendar
+    item id=nav_bills       title="Bills"     icon=@drawable/ic_bills
+    item id=nav_capture     title="Capture"   icon=@drawable/ic_capture
+    item id=nav_transfer    title="Transfer"  icon=@drawable/ic_transfer
+    item id=nav_agent       title="Agent"     icon=@drawable/ic_mic
+
+  Note: Vector drawables for these icons are created in this block as simple
+  24dp Material Design icons (calendar_month, receipt_long, add_a_photo,
+  cloud_upload, mic). They can be replaced with custom artwork later.
+
+FILE: app/src/main/res/navigation/nav_graph.xml
+Role: Navigation Component graph defining all destinations and actions.
+
+  Nav host ID: nav_host_fragment
+  startDestination: @id/calendarFragment
+
+  Fragment destinations:
+    calendarFragment  — class .ui.calendar.CalendarFragment
+    billsFragment     — class .ui.bills.BillsFragment
+    captureFragment   — class .ui.capture.CaptureFragment
+    transferFragment  — class .ui.transfer.TransferFragment
+    agentFragment     — class .ui.agent.AgentFragment
+
+  Activity destinations:
+    eventEditActivity — class .ui.calendar.EventEditActivity
+      argument: event_id (Long, defaultValue = 0L)
+        0L = create new event; non-zero = edit existing
+    billEditActivity  — class .ui.bills.BillEditActivity
+      argument: bill_id (Long, defaultValue = 0L)
+
+  Actions in calendarFragment:
+    action_calendarFragment_to_eventEditActivity
+      destination: eventEditActivity
+
+  Actions in billsFragment:
+    action_billsFragment_to_billEditActivity
+      destination: billEditActivity
+
+FILE: app/src/main/res/values/strings.xml
+Role: All user-visible string resources.
+
+  Required strings (minimum for this block):
+    app_name = "Schedualizer"
+    nav_calendar = "Calendar"
+    nav_bills = "Bills"
+    nav_capture = "Capture"
+    nav_transfer = "Transfer"
+    nav_agent = "Agent"
+    notification_channel_alerts_name = "Reminders & Alerts"
+    notification_channel_service_name = "Schedualizer Service"
+    notification_channel_transfer_name = "File Transfers"
+    permission_camera_rationale = "Camera access is needed to photograph receipts."
+    permission_mic_rationale = "Microphone access is needed for the voice agent."
+    permission_notifications_rationale = "Notification permission is needed for alerts."
+
+FILE: app/src/main/res/values/colors.xml
+Role: App color palette.
+
+  Colors:
+    colorPrimary        #1565C0   (deep blue — calendar/branding)
+    colorPrimaryVariant #0D47A1
+    colorSecondary      #F57C00   (orange — high priority)
+    colorBackground     #FAFAFA   (near-white background)
+    colorSurface        #FFFFFF
+    colorOnPrimary      #FFFFFF
+    colorOnSecondary    #000000
+    priorityCritical    #D32F2F   (red)
+    priorityHigh        #F57C00   (orange)
+    priorityNormal      #1565C0   (blue)
+    priorityLow         #757575   (grey)
+    overdueRed          #FFCDD2   (light red background for overdue rows)
+
+FILE: app/src/main/res/values/themes.xml
+Role: App Material theme.
+
+  Theme: Theme.BaxtersSchedulaizer extends Theme.MaterialComponents.DayNight.DarkActionBar
+  Set: colorPrimary, colorPrimaryVariant, colorSecondary to the values in colors.xml.
+  windowActionBar = false (using BottomNav, not ActionBar)
+  windowNoTitle = true
+
+--------------------------------------------------------------------------------
+INTERFACES EXPOSED
+--------------------------------------------------------------------------------
+- Nav action IDs: action_calendarFragment_to_eventEditActivity,
+  action_billsFragment_to_billEditActivity — used by G-2 and G-3 fragments.
+- Nav argument name: event_id (Long) — used by EventEditActivity (G-2).
+- Nav argument name: bill_id (Long) — used by BillEditActivity (G-3).
+
+--------------------------------------------------------------------------------
+DESIGN DECISIONS
+--------------------------------------------------------------------------------
+- Single Activity architecture with Navigation Component. All 5 tabs are
+  Fragments inside one Activity. EventEditActivity and BillEditActivity are
+  separate Activities (not Fragments) because they are full-screen forms
+  launched with arguments and benefit from independent back stack behavior.
+- Permission requests are batched in MainActivity.onCreate() rather than
+  lazily when a feature is first used. Reason: fewer interruptions mid-task.
+  The user sees all permission dialogs on first launch.
+- BottomNavigationView from Material Components — provides label, icon, and
+  badge count support for future use (e.g., pending upload count badge).
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] MainActivity.kt compiles and starts SchedulaizerService on launch.
+[ ] activity_main.xml has NavHostFragment + BottomNavigationView.
+[ ] bottom_nav_menu.xml has 5 items matching the 5 tab fragment IDs.
+[ ] nav_graph.xml has 5 fragment destinations + 2 activity destinations
+    with correct argument declarations.
+[ ] strings.xml has all required string resources.
+[ ] colors.xml has all color values including 4 priority colors.
+[ ] themes.xml extends MaterialComponents theme.
+[ ] ./gradlew :app:assembleDebug builds with zero errors.
+[ ] App launches on emulator: bottom nav shows 5 tabs, tapping each tab
+    navigates without crash (stubs are empty but not crashing).
+================================================================================

@@ -1,0 +1,226 @@
+================================================================================
+BLOCK C-2 — UTILITY SINGLETONS (DateUtils, FileUtils)
+Module C: Core Shared Types
+================================================================================
+
+BLOCK ID:       C-2
+MODULE:         C — Core Shared Types
+CRATE:          com.baxter.schedulaizer.util
+DEPENDS ON:     C-1
+BUILD ORDER:    7 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block creates two utility object singletons: DateUtils and FileUtils.
+DateUtils provides all epoch/calendar arithmetic used by bills, alerts, and
+the calendar UI. FileUtils manages internal storage paths, MIME detection, and
+file naming conventions used by CaptureFragment and FileTransferManager.
+After this block, no date or file path logic needs to be duplicated across
+ViewModels, Services, or Repositories.
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+
+FILE: app/src/main/java/com/baxter/schedulaizer/util/DateUtils.kt
+Role: All date/time arithmetic for the app. Works exclusively with epoch
+      milliseconds (Long) internally; formats for display only when needed.
+
+  Object: DateUtils
+
+    Constants:
+      MS_PER_DAY: Long = 86_400_000L
+      MS_PER_HOUR: Long = 3_600_000L
+
+    Functions:
+
+      fun nowMs(): Long
+        Returns System.currentTimeMillis().
+
+      fun todayStartMs(): Long
+        Returns the epoch ms of midnight (00:00:00.000) for today in the
+        device's default timezone.
+
+      fun todayEndMs(): Long
+        Returns todayStartMs() + MS_PER_DAY - 1.
+
+      fun startOfWeekMs(): Long
+        Returns epoch ms of Monday 00:00:00 of the current week (ISO week).
+
+      fun endOfWeekMs(): Long
+        Returns startOfWeekMs() + (7 * MS_PER_DAY) - 1.
+
+      fun startOfMonthMs(): Long
+        Returns epoch ms of the 1st day of the current month at midnight.
+
+      fun endOfMonthMs(): Long
+        Returns the last millisecond of the last day of the current month.
+
+      fun formatDate(ms: Long): String
+        Formats epoch ms as "MMM d, yyyy" (e.g. "Jun 8, 2026") using
+        SimpleDateFormat with the device's default locale.
+
+      fun formatDateTime(ms: Long): String
+        Formats epoch ms as "MMM d, yyyy h:mm a" (e.g. "Jun 8, 2026 2:30 PM").
+
+      fun formatTime(ms: Long): String
+        Formats epoch ms as "h:mm a" (e.g. "2:30 PM").
+
+      fun formatShortDate(ms: Long): String
+        Formats epoch ms as "M/d" (e.g. "6/8") — used in calendar grid cells.
+
+      fun nextDueDateMs(dueDayOfMonth: Int, intervalMonths: Int): Long
+        Calculates the next occurrence of a bill's due date.
+        Logic:
+          1. Get today's date.
+          2. Construct a Calendar set to dueDayOfMonth in the current month.
+          3. If that date is today or in the future AND within the current billing
+             cycle, return it.
+          4. Otherwise, advance by intervalMonths and return that date at midnight.
+          5. Handles month-end edge cases: if dueDayOfMonth = 31 and the target
+             month has 28 days, use the last day of that month instead.
+        Returns epoch ms of next due date at 00:00:00.
+
+      fun daysUntil(targetMs: Long): Int
+        Returns the number of whole days between now and targetMs.
+        Negative if targetMs is in the past.
+
+      fun isOverdue(dueDateMs: Long): Boolean
+        Returns true if dueDateMs < todayStartMs().
+
+      fun isDueThisWeek(dueDateMs: Long): Boolean
+        Returns true if dueDateMs is between todayStartMs() and endOfWeekMs().
+
+      fun isDueThisMonth(dueDateMs: Long): Boolean
+        Returns true if dueDateMs is between todayStartMs() and endOfMonthMs().
+
+      fun epochFromParts(year: Int, month: Int, day: Int,
+                         hour: Int = 0, minute: Int = 0): Long
+        Constructs an epoch ms from explicit date/time parts.
+        month is 1-based (January = 1). Uses device default timezone.
+
+      fun parseIso(isoString: String): Long?
+        Parses an ISO 8601 date string ("2026-06-08" or "2026-06-08T14:30:00").
+        Returns null on parse failure — never throws.
+
+FILE: app/src/main/java/com/baxter/schedulaizer/util/FileUtils.kt
+Role: Internal storage path management, file naming, and MIME detection for
+      all captured files. All captured files are stored in internal storage
+      (Context.filesDir) to prevent other apps from reading them.
+
+  Object: FileUtils
+
+    Functions:
+
+      fun capturesDir(context: Context): File
+        Returns context.filesDir.resolve("captures").
+        Creates the directory if it does not exist.
+        This is the root for all captured receipts, photos, and memos.
+
+      fun voiceMemosDir(context: Context): File
+        Returns context.filesDir.resolve("voice_memos").
+        Creates the directory if it does not exist.
+
+      fun newReceiptFile(context: Context): File
+        Returns a new File at capturesDir(context)/receipt_[timestamp].jpg.
+        timestamp = System.currentTimeMillis().
+        Does NOT create the file — just returns the path for CameraX to write to.
+
+      fun newVoiceMemoFile(context: Context): File
+        Returns a new File at voiceMemosDir(context)/memo_[timestamp].m4a.
+
+      fun newScreenshotFile(context: Context): File
+        Returns a new File at capturesDir(context)/screenshot_[timestamp].jpg.
+
+      fun newTextNoteFile(context: Context, content: String): File
+        Creates (and writes) a text file at capturesDir(context)/note_[timestamp].txt.
+        Writes content to the file using UTF-8 encoding.
+        Returns the File after writing.
+        Throws IOException if the write fails — caller must handle.
+
+      fun getMimeType(file: File): String
+        Detects MIME type using URLConnection.guessContentTypeFromName(file.name).
+        Falls back to "application/octet-stream" if detection fails.
+
+      fun getContentUri(context: Context, file: File): Uri
+        Returns a content:// URI for the file via FileProvider.
+        Authority: "${context.packageName}.provider"
+        Used when sharing or displaying captured files.
+        Wraps FileProvider.getUriForFile() — throws IllegalArgumentException if
+        the file is not within the FileProvider paths; caller must not pass
+        files outside capturesDir or voiceMemosDir.
+
+      fun formatFileSize(bytes: Long): String
+        Returns a human-readable size string:
+          < 1024 bytes     -> "X B"
+          < 1_048_576      -> "X.X KB"
+          < 1_073_741_824  -> "X.X MB"
+          >= 1_073_741_824 -> "X.X GB"
+
+      fun deleteFile(file: File): Boolean
+        Deletes the file if it exists. Returns true on success, false otherwise.
+        Does NOT throw.
+
+--------------------------------------------------------------------------------
+INTERFACES EXPOSED
+--------------------------------------------------------------------------------
+- DateUtils.nextDueDateMs(dueDayOfMonth, intervalMonths): Long
+    Consumed by BillRepository (D-4) when creating or updating a BillEntity.
+- DateUtils.daysUntil(targetMs): Int
+    Consumed by BillsViewModel (G-3) to compute the "due in X days" badge.
+- DateUtils.isOverdue(dueDateMs): Boolean
+    Consumed by BillsViewModel (G-3) to trigger red/overdue highlighting.
+- DateUtils.formatDate, formatDateTime, formatTime: String
+    Consumed by all UI fragments for display formatting.
+- FileUtils.capturesDir, newReceiptFile, newVoiceMemoFile, newTextNoteFile
+    Consumed by CaptureFragment (G-4) and CaptureViewModel (G-4).
+- FileUtils.getContentUri(context, file): Uri
+    Consumed by CaptureFragment (G-4) when passing image URI to CameraX.
+- FileUtils.getMimeType(file): String
+    Consumed by AttachmentRepository (D-4) when saving an AttachmentEntity.
+- FileUtils.formatFileSize: String
+    Consumed by TransferFragment (G-5) for upload queue display.
+
+--------------------------------------------------------------------------------
+DESIGN DECISIONS
+--------------------------------------------------------------------------------
+- All date arithmetic uses java.util.Calendar (not java.time) for compatibility
+  with minSdk 26. The java.time.* desugaring library is NOT included to keep
+  the dependency footprint minimal.
+- Files are stored in Context.filesDir (internal storage), NOT
+  Environment.getExternalStorageDirectory(). Reason: external storage requires
+  READ/WRITE_EXTERNAL_STORAGE permissions which are restricted on API 30+ and
+  are not necessary for a single-user personal app.
+- FileUtils returns File paths; it does NOT perform I/O except in newTextNoteFile.
+  All other I/O is delegated to CameraX, MediaRecorder, or the caller.
+
+--------------------------------------------------------------------------------
+UNIT TESTS — WHAT TO VERIFY
+--------------------------------------------------------------------------------
+- DateUtils.daysUntil(DateUtils.nowMs() + MS_PER_DAY) returns 1.
+- DateUtils.daysUntil(DateUtils.nowMs() - MS_PER_DAY) returns -1.
+- DateUtils.isOverdue(DateUtils.nowMs() - MS_PER_DAY) returns true.
+- DateUtils.isOverdue(DateUtils.nowMs() + MS_PER_DAY) returns false.
+- DateUtils.nextDueDateMs(31, 1) does not throw for a month with 28 days.
+  (February test: result day is last day of February, not March 2nd or 3rd.)
+- DateUtils.epochFromParts(2026, 6, 8, 14, 30) produces the correct epoch ms.
+- DateUtils.parseIso("2026-06-08") returns the correct epoch ms.
+- DateUtils.parseIso("not-a-date") returns null.
+- FileUtils.formatFileSize(500) returns "500 B".
+- FileUtils.formatFileSize(1536) returns "1.5 KB".
+- FileUtils.formatFileSize(2_097_152) returns "2.0 MB".
+- FileUtils.getMimeType(File("receipt.jpg")) returns "image/jpeg".
+- FileUtils.getMimeType(File("memo.m4a")) returns "audio/mp4" or "audio/m4a".
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] DateUtils.kt compiles with all 14 functions listed above.
+[ ] FileUtils.kt compiles with all 9 functions listed above.
+[ ] Unit tests for DateUtils date arithmetic all pass.
+[ ] Unit tests for FileUtils.formatFileSize and getMimeType all pass.
+[ ] nextDueDateMs() correctly handles February edge case (no day 31 in Feb).
+[ ] ./gradlew :app:compileDebugKotlin passes with zero errors or warnings on
+    these two files.
+================================================================================

@@ -1,0 +1,204 @@
+================================================================================
+BLOCK G-2 — CALENDAR FRAGMENT, VIEW MODEL & EVENT EDIT ACTIVITY
+Module G: UI Layer
+================================================================================
+
+BLOCK ID:       G-2
+MODULE:         G — UI Layer
+CRATE:          com.baxter.schedulaizer.ui.calendar
+DEPENDS ON:     G-1, D-4, E-2
+BUILD ORDER:    19 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block implements the Calendar tab: CalendarFragment (month/event list view),
+CalendarViewModel (data and filtering), and EventEditActivity (create/edit form).
+After this block, the user can view all upcoming events, filter by category and
+priority, tap an event to edit it, create new events from a form, and delete events.
+Alert scheduling is triggered automatically on save.
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+
+FILE: app/src/main/java/com/baxter/schedulaizer/ui/calendar/CalendarViewModel.kt
+Role: State holder for the Calendar tab. Exposes filtered event lists and
+      handles user actions.
+
+  Class: CalendarViewModel(application: Application) : AndroidViewModel(application)
+
+  Access to repositories via SchedulaizerApp.get(application):
+    private val eventRepo = SchedulaizerApp.get(application).eventRepository
+
+  State flows:
+    private val _filterCategory = MutableStateFlow<EventCategory?>(null)
+    private val _filterPriority = MutableStateFlow<Int?>(null)
+    private val _selectedMonth = MutableStateFlow(DateUtils.startOfMonthMs())
+
+    val events: StateFlow<List<EventEntity>>
+      Combines eventRepo.allEvents with _filterCategory and _filterPriority.
+      Uses combine() from kotlinx.coroutines.flow.
+      Filter logic:
+        - If _filterCategory != null: only include events matching category.
+        - If _filterPriority != null: only include events with priority <= value.
+      Stateflow produced by stateIn(viewModelScope, SharingStarted.Lazily, emptyList()).
+
+    val eventsThisMonth: StateFlow<List<EventEntity>>
+      Uses eventRepo.getEventsInRange(_selectedMonth, endOfMonth).
+      Updated when _selectedMonth changes.
+
+  Functions:
+    fun setFilterCategory(cat: EventCategory?) — updates _filterCategory
+    fun setFilterPriority(level: PriorityLevel?) — updates _filterPriority
+      (passes level?.ordinal)
+    fun setSelectedMonth(startMs: Long) — updates _selectedMonth
+    suspend fun deleteEvent(event: EventEntity) — calls eventRepo.delete(event)
+    fun navigateToEditEvent(fragment: Fragment, eventId: Long = 0L)
+      Calls findNavController().navigate() with action and event_id argument.
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/ui/calendar/CalendarFragment.kt
+Role: Displays event list + month header. Observes CalendarViewModel.
+
+  Class: CalendarFragment : Fragment(R.layout.fragment_calendar)
+
+  UI components (via ViewBinding — FragmentCalendarBinding):
+    recyclerViewEvents: RecyclerView   — event list
+    textMonthHeader: TextView          — e.g. "June 2026"
+    btnPrevMonth: ImageButton          — navigate to previous month
+    btnNextMonth: ImageButton          — navigate to next month
+    btnAddEvent: FloatingActionButton  — navigate to EventEditActivity (new)
+    spinnerCategory: Spinner           — filter by category
+    spinnerPriority: Spinner           — filter by priority
+
+  onViewCreated():
+    Binds ViewModel. Sets up RecyclerView with EventAdapter.
+    Observes viewModel.events and submits to adapter.
+    Sets up FAB click -> navigate to eventEditActivity with event_id = 0L.
+    Sets up prev/next month buttons -> viewModel.setSelectedMonth().
+    Sets up spinner listeners -> viewModel.setFilterCategory() / setFilterPriority().
+
+  RecyclerView adapter (inner class or separate file — EventAdapter):
+    Displays each EventEntity in item_event.xml.
+    Shows: title, formatted start date/time, category chip, priority color stripe.
+    On item click: navigate to EventEditActivity with event_id = event.id.
+    On item long press: show confirmation dialog -> viewModel.deleteEvent(event).
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/ui/calendar/EventEditActivity.kt
+Role: Full-screen form for creating and editing events.
+
+  Class: EventEditActivity : AppCompatActivity()
+
+  Navigation args:
+    event_id: Long (from intent extras, 0L = new event)
+
+  UI components (ActivityEventEditBinding):
+    editTitle: EditText
+    editDescription: EditText
+    btnPickDate: Button         — shows DatePickerDialog
+    btnPickTime: Button         — shows TimePickerDialog
+    checkAllDay: CheckBox       — toggles time field visibility
+    spinnerCategory: Spinner    — EventCategory values
+    spinnerPriority: Spinner    — PriorityLevel values
+    spinnerRecurrence: Spinner  — RecurrenceType values
+    seekBarAlert: SeekBar       — alert offset: 0, 5, 10, 15, 30, 60, 120, 1440 minutes
+    textAlertSummary: TextView  — "Alert: 15 minutes before"
+    btnSave: Button
+    btnCancel: Button
+
+  Behavior:
+    On load (event_id != 0L): loads EventEntity from eventRepo.getById(),
+      populates all fields.
+    On load (event_id == 0L): pre-fills date to tomorrow, time to 09:00.
+    btnSave: validates title non-empty, endMs >= startMs.
+      Calls eventRepo.save(event).
+      Calls AlertScheduler.scheduleForEvent(context, savedEvent) if alertOffset > 0.
+      Calls setResult(RESULT_OK) and finish().
+    btnCancel: calls finish() without saving.
+    DatePickerDialog: updates selectedDateMs field.
+    TimePickerDialog: updates selectedTimeMs field.
+    checkAllDay: hides/shows time fields.
+
+
+FILE: app/src/main/res/layout/fragment_calendar.xml
+Role: Calendar tab layout.
+
+  Structure:
+    ConstraintLayout
+      LinearLayout (horizontal — month nav)
+        btnPrevMonth (ImageButton)
+        textMonthHeader (TextView, weight 1)
+        btnNextMonth (ImageButton)
+      LinearLayout (horizontal — filters)
+        spinnerCategory
+        spinnerPriority
+      RecyclerView (id: recyclerViewEvents, weight 1, vertical list)
+      FloatingActionButton (id: btnAddEvent, bottom-right corner, icon: ic_add)
+
+
+FILE: app/src/main/res/layout/item_event.xml
+Role: Single event row in the RecyclerView.
+
+  Structure:
+    ConstraintLayout (height wrap_content, margin 4dp)
+      View (id: priorityStripe, width 4dp, full height, background = priority color)
+      TextView (id: textTitle — event title, bold)
+      TextView (id: textDateTime — formatted start date/time)
+      TextView (id: textCategory — category chip/badge)
+      ImageView (id: iconRecurrence — visible if recurrenceRule != NONE)
+
+
+FILE: app/src/main/res/layout/activity_event_edit.xml
+Role: Event edit form layout.
+
+  Structure:
+    ScrollView
+      LinearLayout (vertical, padding 16dp)
+        editTitle (EditText, hint "Event title")
+        editDescription (EditText, hint "Notes", multiline, minLines 3)
+        btnPickDate (Button, "Pick Date")
+        btnPickTime (Button, "Pick Time")
+        checkAllDay (CheckBox, "All day")
+        spinnerCategory (Spinner)
+        spinnerPriority (Spinner)
+        spinnerRecurrence (Spinner)
+        seekBarAlert (SeekBar)
+        textAlertSummary (TextView)
+        LinearLayout (horizontal, buttons)
+          btnCancel (Button, outlined)
+          btnSave (Button, filled)
+
+--------------------------------------------------------------------------------
+INTERFACES EXPOSED
+--------------------------------------------------------------------------------
+- CalendarViewModel.events: StateFlow<List<EventEntity>> — consumed by CalendarFragment.
+- CalendarViewModel.setFilterCategory, setFilterPriority, setSelectedMonth:
+    called by CalendarFragment spinner and button listeners.
+- EventEditActivity receives event_id via Intent extra.
+
+--------------------------------------------------------------------------------
+UNIT TESTS — WHAT TO VERIFY
+--------------------------------------------------------------------------------
+- CalendarViewModel.events emits empty list when no events are in the DB.
+- CalendarViewModel.events filters correctly by category.
+- CalendarViewModel.events filters correctly by priority (maxPriority = 1
+  returns only CRITICAL and HIGH events).
+- EventEditActivity with event_id = 0L shows empty title field (new event).
+- EventEditActivity with event_id = existing ID shows pre-populated title.
+- Saving with blank title shows validation error and does NOT navigate away.
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] CalendarViewModel.kt compiles with events StateFlow using combine().
+[ ] CalendarFragment.kt compiles and observes events correctly.
+[ ] EventEditActivity.kt compiles with save, cancel, date/time pickers.
+[ ] fragment_calendar.xml, item_event.xml, activity_event_edit.xml all exist.
+[ ] Priority color stripe in item_event.xml uses the 4 priority colors.
+[ ] FAB navigates to EventEditActivity with event_id = 0L.
+[ ] Tapping an existing event navigates with correct event_id.
+[ ] Save in EventEditActivity calls alertScheduler.scheduleForEvent().
+[ ] ./gradlew :app:assembleDebug builds with zero errors.
+================================================================================

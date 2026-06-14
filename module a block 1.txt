@@ -1,0 +1,166 @@
+================================================================================
+BLOCK A-1 — PROJECT SCOPE & INTEGRATION POINTS
+Module A: Scope & Project Layout
+================================================================================
+
+BLOCK ID:       A-1
+MODULE:         A — Scope & Project Layout
+CRATE:          N/A (orientation block — no code written here)
+DEPENDS ON:     None
+BUILD ORDER:    1 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block defines what Baxters Schedualizer is, what it connects to, and what
+it deliberately does NOT do. It records all major design decisions so that no
+downstream block re-litigates them. After this block, the implementing agent has
+a complete mental model of the system before touching a single file.
+
+This block does NOT define folder structure (A-2), does NOT set up Gradle (B),
+and does NOT write any Kotlin source.
+
+--------------------------------------------------------------------------------
+CONTEXT — WHY THIS EXISTS
+--------------------------------------------------------------------------------
+Baxters Schedualizer is a personal Android productivity APK. It is the mobile
+input surface for a larger Windows-based home ecosystem. The user's life data
+(bills, calendar events, receipts, voice memos) enters via this app and flows
+through to a homelab PC running Budget Blaster (Windows) for accounting and
+to the general homelab file store for archival.
+
+The app is built as a standalone APK — NOT a fork of RemoteDexter. It reuses
+RemoteDexter's compiled Rust transport library (.so files) as a black-box
+dependency for the Android-to-Windows tunnel, without modifying any RemoteDexter
+source code. RemoteDexter remains its own independent project.
+
+--------------------------------------------------------------------------------
+EXTERNAL DEPENDENCIES & INTEGRATION POINTS
+--------------------------------------------------------------------------------
+
+1. RemoteDexter Transport Layer
+   - What: The compiled Rust .so library from RemoteDexter-v3.
+   - Interface: JNI via TransportBindings.kt (copied from RemoteDexter, adapted
+     to Schedualizer package). Methods used: rd_init_session(), rd_tick(),
+     rd_shutdown_session(), rd_send_file_chunk(), rd_query_connection_state().
+   - Data flow: APK -> encrypted tunnel -> homelab PC Windows host.
+   - Assumption: RemoteDexter host app is running on homelab PC and the device
+     has previously completed QR/NFC pairing. Schedualizer does NOT handle
+     pairing — the user pairs via RemoteDexter separately, then Schedualizer
+     reuses the established tunnel credential.
+   - .so ABI folders required: arm64-v8a/, armeabi-v7a/, x86_64/ (emulator).
+
+2. Budget Blaster (Windows)
+   - What: A separate Windows application that does OCR on receipt images and
+     performs budget balancing. Baxter owns and runs this app on the homelab PC.
+   - Interface: HTTP POST to a configurable local LAN IP:port (e.g.
+     192.168.1.x:7890). No public internet. No authentication token in v1 —
+     the tunnel itself provides the security boundary.
+   - Data flow: APK packages { date, amount_hint, category, image_base64 } as
+     JSON -> POSTs to Budget Blaster endpoint -> Budget Blaster processes OCR
+     and imports line items into its own database.
+   - Assumption: Budget Blaster is running and listening on the configured port
+     when the user taps "Send to Budget Blaster".
+
+3. Homelab File Store
+   - What: A directory on the homelab PC used as a general archive.
+   - Interface: File transfer over RemoteDexter tunnel. Destination path is
+     configurable in Schedualizer Settings (e.g. D:\schedualizer\receipts\).
+   - Data flow: APK enqueues file -> FileTransferManager sends via tunnel ->
+     file lands at destination path on homelab PC.
+
+--------------------------------------------------------------------------------
+WHAT THIS APP IS
+--------------------------------------------------------------------------------
+- Android APK (Kotlin, minSdk 26, targetSdk 34)
+- Personal life management hub: calendar, bills, receipts, voice, reminders
+- Mobile input surface feeding a Windows homelab ecosystem
+- Voice-driven: mic button -> speech-to-text -> intent parser -> action
+- Priority-tagged: every event and bill carries a 4-tier priority label
+- Receipt/memo capture: camera, gallery pick, voice memos, text notes
+- Upload client: pushes captured files to homelab via RemoteDexter tunnel
+- Budget Blaster bridge: packages receipt data for Windows-side OCR + accounting
+- Offline-first: all data stored locally in Room (SQLite); uploads are queued
+  and retry automatically when the tunnel reconnects
+
+--------------------------------------------------------------------------------
+WHAT THIS APP IS NOT
+--------------------------------------------------------------------------------
+- NOT a fork or modification of RemoteDexter source code
+- NOT a cloud calendar (no Google Calendar API, no iCloud, no CalDAV in v1)
+- NOT a full accounting app (Budget Blaster on Windows owns that role)
+- NOT a multi-user or shared-calendar app (single user, Baxter only)
+- NOT responsible for device pairing (handled by RemoteDexter separately)
+- NOT storing financial credentials or banking passwords anywhere on device
+- NOT using any third-party analytics, crash reporting, or ad SDKs
+- NOT requiring internet access — LAN-only operation is fully supported
+
+--------------------------------------------------------------------------------
+DESIGN DECISIONS
+--------------------------------------------------------------------------------
+
+Decision 1 — Transport: Reuse RemoteDexter .so, do not re-implement.
+  Reason: RemoteDexter's Rust tunnel is production-grade and already tested.
+  Duplicating it would create maintenance burden. The .so is treated as a
+  vendored binary dependency.
+
+Decision 2 — Database: Room (SQLite), not a cloud database.
+  Reason: Offline-first. User's personal data stays on-device. No subscription,
+  no server dependency, no data leakage risk.
+
+Decision 3 — Voice: Android SpeechRecognizer with EXTRA_PREFER_OFFLINE = true.
+  Reason: Works without internet. No audio data sent to third-party servers.
+  On-device model is sufficient for the structured command vocabulary needed.
+
+Decision 4 — Dependency injection: Manual (no Hilt) in v1.
+  Reason: App has one user, one database, modest complexity. Manual DI via
+  companion objects and Application class is sufficient and faster to build.
+  Hilt can be added in v2 if the codebase grows.
+
+Decision 5 — Budget Blaster POST uses LAN IP, not tunnel file transfer.
+  Reason: Budget Blaster needs to receive structured JSON + image, not just a
+  raw file. A small HTTP POST is simpler than a custom tunnel framing protocol
+  for this use case. The user configures the IP:port in Settings.
+
+Decision 6 — Amounts stored as Long cents, not Float/Double.
+  Reason: Floating-point arithmetic is unsuitable for currency. All monetary
+  values are stored as integer cents (e.g. $12.99 = 1299L) and formatted for
+  display only.
+
+Decision 7 — No minification / ProGuard in debug builds.
+  Reason: Faster build iteration during development. Release builds will enable
+  ProGuard with a basic rules file to protect the JNI binding class names.
+
+Decision 8 — Notifications use NotificationCompat, not raw Notification.
+  Reason: Backward compatibility with minSdk 26. NotificationCompat handles
+  channel creation fallback automatically.
+
+--------------------------------------------------------------------------------
+SAFETY & SECURITY NOTES
+--------------------------------------------------------------------------------
+- No financial credentials (passwords, PINs, card numbers) are ever stored
+  on the device, logged, or transmitted by this app.
+- Budget Blaster endpoint IP:port is stored in Android SharedPreferences under
+  the key "budget_blaster_endpoint". It is never hardcoded.
+- All file transfers use the RemoteDexter encrypted tunnel. No raw socket
+  connections to the homelab are opened by Schedualizer directly.
+- Voice audio is processed entirely on-device. No audio bytes leave the device.
+- Receipt images are stored in Android internal storage (Context.filesDir),
+  not external storage, to prevent other apps from reading them.
+- The app requests only the permissions it actually uses. See B-3 for the
+  full permission list with justifications.
+
+--------------------------------------------------------------------------------
+UNIT TESTS — WHAT TO VERIFY
+--------------------------------------------------------------------------------
+No code in this block. No tests apply.
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] Agent has read this block and confirmed understanding of scope.
+[ ] Agent can state what RemoteDexter integration means (reuse .so, not source).
+[ ] Agent can state what Budget Blaster bridge means (JSON POST, LAN HTTP).
+[ ] Agent can state the offline-first data strategy (Room, queued uploads).
+[ ] Agent can state the 8 design decisions without referring back to this file.
+================================================================================

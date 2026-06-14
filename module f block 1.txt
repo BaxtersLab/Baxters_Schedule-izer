@@ -1,0 +1,215 @@
+================================================================================
+BLOCK F-1 — VOICE LISTENER SERVICE
+Module F: Voice Agent
+================================================================================
+
+BLOCK ID:       F-1
+MODULE:         F — Voice Agent
+CRATE:          com.baxter.schedulaizer.voice
+DEPENDS ON:     E-1, C-1
+BUILD ORDER:    15 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block creates VoiceListenerService — the wrapper around Android's
+SpeechRecognizer that handles mic activation, audio capture, offline recognition,
+and result delivery. After this block, the mic button in the Agent tab can
+start and stop voice capture and receive a recognized text string for processing
+by IntentParser (F-2).
+
+This block does NOT implement intent parsing (F-2) or action dispatch (F-3).
+It only captures speech and delivers raw recognized text.
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+
+FILE: app/src/main/java/com/baxter/schedulaizer/voice/VoiceListenerService.kt
+Role: Manages the SpeechRecognizer lifecycle. Started/stopped by AgentFragment.
+      Broadcasts recognized text as a local broadcast.
+
+  Class: VoiceListenerService : Service()
+
+  Companion object:
+    const val ACTION_VOICE_RESULT = "com.baxter.schedulaizer.VOICE_RESULT"
+    const val EXTRA_RECOGNIZED_TEXT = "recognized_text"
+    const val ACTION_START_LISTENING = "com.baxter.schedulaizer.START_LISTENING"
+    const val ACTION_STOP_LISTENING  = "com.baxter.schedulaizer.STOP_LISTENING"
+
+  Private properties:
+    recognizer: SpeechRecognizer?   — initialized in onCreate
+    listeningIntent: Intent          — RecognizerIntent built once and reused
+    isListening: Boolean = false
+
+  Lifecycle:
+
+    onCreate()
+      Checks SpeechRecognizer.isRecognitionAvailable(this).
+        If false: stops self (stopSelf()) — recognition not available on device.
+      Creates recognizer = SpeechRecognizer.createSpeechRecognizer(this).
+      Sets recognizer.setRecognitionListener(buildListener()).
+      Builds listeningIntent:
+        RecognizerIntent.ACTION_RECOGNIZE_SPEECH
+        EXTRA_LANGUAGE_MODEL = LANGUAGE_MODEL_FREE_FORM
+        EXTRA_LANGUAGE = Locale.getDefault()
+        EXTRA_PREFER_OFFLINE = true
+          This is the critical flag — requests on-device recognition.
+          If offline model is not available, Android falls back to network
+          silently. For Baxter's use case this is acceptable.
+        EXTRA_MAX_RESULTS = 1
+        EXTRA_CALLING_PACKAGE = packageName
+
+    onStartCommand(intent, flags, startId): Int
+      If intent.action == ACTION_START_LISTENING and !isListening:
+        isListening = true
+        recognizer?.startListening(listeningIntent)
+      If intent.action == ACTION_STOP_LISTENING and isListening:
+        isListening = false
+        recognizer?.stopListening()
+      Returns START_NOT_STICKY
+        Reason: Voice sessions are transient. If the service is killed mid-session,
+        it should NOT auto-restart. The user re-taps the mic to start again.
+
+    onBind(intent): IBinder? = null
+
+    onDestroy()
+      recognizer?.destroy()
+      recognizer = null
+      isListening = false
+
+  Private function: buildListener(): RecognitionListener
+    Returns an anonymous object implementing RecognitionListener with these
+    meaningful overrides (all others are no-op):
+
+      onResults(results: Bundle)
+        val matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+        val text = matches?.firstOrNull() ?: return
+        isListening = false
+        Sends a local broadcast via LocalBroadcastManager:
+          Intent(ACTION_VOICE_RESULT).putExtra(EXTRA_RECOGNIZED_TEXT, text)
+          LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+
+      onError(errorCode: Int)
+        isListening = false
+        val message = mapError(errorCode)
+        Sends a local broadcast with EXTRA_RECOGNIZED_TEXT = "" and an
+        additional extra EXTRA_VOICE_ERROR = message.
+        (AgentFragment uses EXTRA_VOICE_ERROR to show a toast/status message.)
+
+      onEndOfSpeech()
+        Sets isListening = false (recognition is processing, not capturing).
+
+  Private function: mapError(code: Int): String
+    Maps SpeechRecognizer error codes to user-friendly messages:
+      ERROR_AUDIO (3)             -> "Microphone error"
+      ERROR_CLIENT (5)            -> "Client error"
+      ERROR_INSUFFICIENT_PERMS(9) -> "Microphone permission denied"
+      ERROR_NETWORK (2)           -> "Network error (check offline setting)"
+      ERROR_NO_MATCH (7)          -> "Could not understand — try again"
+      ERROR_RECOGNIZER_BUSY (8)   -> "Recognizer busy — try again"
+      ERROR_SPEECH_TIMEOUT (6)    -> "No speech detected"
+      else                        -> "Unknown error ($code)"
+
+  Note: SpeechRecognizer must be created and used on the main thread.
+  VoiceListenerService uses the main Looper for all recognizer calls.
+  onStartCommand runs on main thread by default — this is correct.
+  Do NOT call recognizer methods from a background coroutine.
+
+FILE: app/src/main/java/com/baxter/schedulaizer/voice/VoiceState.kt
+Role: Shared observable state for the voice session. Observed by AgentViewModel.
+
+  object VoiceState
+
+  enum class Status { IDLE, LISTENING, PROCESSING, ERROR }
+
+  private val _status = MutableStateFlow(Status.IDLE)
+  val status: StateFlow<Status> = _status.asStateFlow()
+
+  private val _lastError = MutableStateFlow("")
+  val lastError: StateFlow<String> = _lastError.asStateFlow()
+
+  fun setListening()    — sets _status to LISTENING
+  fun setProcessing()   — sets _status to PROCESSING
+  fun setIdle()         — sets _status to IDLE
+  fun setError(msg: String) — sets _status to ERROR, _lastError to msg
+
+  Note: VoiceState is updated by AgentFragment's BroadcastReceiver callbacks
+  and read by AgentViewModel. It is NOT updated by VoiceListenerService
+  directly (Service should not know about ViewModels).
+
+--------------------------------------------------------------------------------
+DATA FLOW
+--------------------------------------------------------------------------------
+User taps mic button in AgentFragment:
+  AgentFragment starts VoiceListenerService with ACTION_START_LISTENING
+  -> VoiceListenerService.recognizer.startListening()
+  -> Android SpeechRecognizer captures audio
+  -> onResults(): broadcasts ACTION_VOICE_RESULT with recognized text
+  -> AgentFragment BroadcastReceiver receives text
+  -> AgentViewModel.onVoiceResult(text) called
+  -> IntentParser.parse(text) called (F-2)
+  -> AgentDispatcher.dispatch(intent) called (F-3)
+
+User taps mic again (stop) or speech times out:
+  ACTION_STOP_LISTENING sent to service
+  -> recognizer.stopListening()
+  -> onEndOfSpeech() fires -> isListening = false
+
+--------------------------------------------------------------------------------
+INTERFACES EXPOSED
+--------------------------------------------------------------------------------
+- VoiceListenerService action constants: ACTION_VOICE_RESULT, ACTION_START_LISTENING,
+  ACTION_STOP_LISTENING — used by AgentFragment (G-5).
+- VoiceListenerService.EXTRA_RECOGNIZED_TEXT — key for broadcast payload.
+- VoiceState.status: StateFlow<Status> — observed by AgentViewModel.
+- VoiceState.lastError: StateFlow<String> — displayed by AgentFragment on error.
+
+--------------------------------------------------------------------------------
+DESIGN DECISIONS
+--------------------------------------------------------------------------------
+- LocalBroadcastManager chosen over binding to Service because the voice result
+  needs to be consumed by a Fragment, not a Service. LocalBroadcast is simpler
+  than a bound service + Binder for a unidirectional fire-and-forget event.
+- START_NOT_STICKY: voice sessions must be user-initiated. Auto-restart would
+  surprise the user with an unexpected active microphone.
+- EXTRA_PREFER_OFFLINE = true: as per A-1 Decision 3. No audio leaves device.
+- SpeechRecognizer main-thread constraint: the Android framework enforces this.
+  VoiceListenerService is a Service not a Thread, so all callbacks arrive on
+  the main Looper naturally.
+
+--------------------------------------------------------------------------------
+SAFETY & SECURITY NOTES
+--------------------------------------------------------------------------------
+- RECORD_AUDIO permission must be granted before starting the service.
+  AgentFragment (G-5) requests RECORD_AUDIO at runtime using
+  ActivityResultContracts.RequestPermission before issuing ACTION_START_LISTENING.
+- Voice audio is NOT saved to disk by this service. Raw audio bytes never touch
+  storage — only the recognized text string is handled.
+- LocalBroadcastManager broadcasts are intra-process only and cannot be
+  intercepted by other apps.
+
+--------------------------------------------------------------------------------
+UNIT TESTS — WHAT TO VERIFY
+--------------------------------------------------------------------------------
+- mapError(SpeechRecognizer.ERROR_NO_MATCH) returns "Could not understand — try again".
+- mapError(SpeechRecognizer.ERROR_INSUFFICIENT_PERMS) returns
+  "Microphone permission denied".
+- mapError(99) returns a string containing "Unknown error".
+- VoiceState.setListening() sets status to LISTENING.
+- VoiceState.setError("test") sets status to ERROR and lastError to "test".
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] VoiceListenerService.kt compiles with onCreate, onStartCommand,
+    onDestroy, buildListener(), mapError().
+[ ] VoiceState.kt compiles with Status enum and all four state-setting functions.
+[ ] EXTRA_PREFER_OFFLINE = true is set in listeningIntent.
+[ ] START_NOT_STICKY is returned from onStartCommand.
+[ ] LocalBroadcastManager.sendBroadcast() is used for results.
+[ ] mapError() covers all documented SpeechRecognizer error codes.
+[ ] VoiceListenerService is declared in AndroidManifest.xml (confirmed B-3).
+[ ] Unit tests for mapError() and VoiceState transitions pass.
+[ ] ./gradlew :app:compileDebugKotlin passes for both files.
+================================================================================

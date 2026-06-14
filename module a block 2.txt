@@ -1,0 +1,230 @@
+================================================================================
+BLOCK A-2 — FOLDER TREE & PACKAGE MAP
+Module A: Scope & Project Layout
+================================================================================
+
+BLOCK ID:       A-2
+MODULE:         A — Scope & Project Layout
+CRATE:          N/A (orientation block — no code written here)
+DEPENDS ON:     A-1
+BUILD ORDER:    2 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block defines the complete directory structure and Kotlin package map for
+the Schedualizer project. After this block, the agent knows exactly where every
+file will live before writing a single one. No ambiguity about path or package
+name is permitted after this block is read.
+
+This block does NOT create any files — that starts at B-1.
+
+--------------------------------------------------------------------------------
+WORKSPACE FOLDER STRUCTURE
+--------------------------------------------------------------------------------
+
+The project lives at:
+  C:\Users\Baxter\Desktop\project summaries\schedulaizer\
+
+Top-level layout:
+  schedulaizer/
+  ├── baxters schedualizerAPK.txt       (original user spec — do not modify)
+  ├── module a block 1.txt              (this series of block files)
+  ├── module a block 2.txt
+  ├── module b block 1.txt
+  ├── ... (all 22 block files)
+  └── apk/                             (Android project root)
+      ├── build.gradle                 (root — plugin declarations only)
+      ├── settings.gradle              (project name + include :app)
+      ├── gradle.properties            (JVM args, AndroidX flag)
+      ├── gradle/
+      │   └── wrapper/
+      │       └── gradle-wrapper.properties
+      └── app/
+          ├── build.gradle             (app module — deps, SDK config)
+          ├── proguard-rules.pro       (release obfuscation rules)
+          └── src/
+              └── main/
+                  ├── AndroidManifest.xml
+                  ├── jniLibs/         (RemoteDexter .so files — not committed)
+                  │   ├── arm64-v8a/
+                  │   │   └── libremotedexter.so
+                  │   ├── armeabi-v7a/
+                  │   │   └── libremotedexter.so
+                  │   └── x86_64/
+                  │       └── libremotedexter.so
+                  ├── res/
+                  │   ├── drawable/
+                  │   │   └── ic_mic.xml           (mic FAB icon)
+                  │   ├── layout/
+                  │   │   ├── activity_main.xml
+                  │   │   ├── activity_event_edit.xml
+                  │   │   ├── activity_bill_edit.xml
+                  │   │   ├── fragment_calendar.xml
+                  │   │   ├── fragment_bills.xml
+                  │   │   ├── fragment_capture.xml
+                  │   │   ├── fragment_transfer.xml
+                  │   │   ├── fragment_agent.xml
+                  │   │   ├── item_event.xml
+                  │   │   ├── item_bill.xml
+                  │   │   └── item_attachment.xml
+                  │   ├── navigation/
+                  │   │   └── nav_graph.xml
+                  │   ├── menu/
+                  │   │   └── bottom_nav_menu.xml
+                  │   └── values/
+                  │       ├── strings.xml
+                  │       ├── colors.xml
+                  │       └── themes.xml
+                  └── java/
+                      └── com/
+                          └── baxter/
+                              └── schedulaizer/
+                                  ├── SchedulaizerApp.kt
+                                  ├── data/
+                                  │   ├── db/
+                                  │   │   ├── SchedulaizerDatabase.kt
+                                  │   │   ├── TypeConverters.kt
+                                  │   │   ├── dao/
+                                  │   │   │   ├── EventDao.kt
+                                  │   │   │   ├── BillDao.kt
+                                  │   │   │   ├── MemoDao.kt
+                                  │   │   │   ├── AttachmentDao.kt
+                                  │   │   │   └── AlertDao.kt
+                                  │   │   └── entity/
+                                  │   │       ├── EventEntity.kt
+                                  │   │       ├── BillEntity.kt
+                                  │   │       ├── MemoEntity.kt
+                                  │   │       ├── AttachmentEntity.kt
+                                  │   │       └── AlertEntity.kt
+                                  │   └── repository/
+                                  │       ├── EventRepository.kt
+                                  │       ├── BillRepository.kt
+                                  │       └── AttachmentRepository.kt
+                                  ├── ui/
+                                  │   ├── MainActivity.kt
+                                  │   ├── calendar/
+                                  │   │   ├── CalendarFragment.kt
+                                  │   │   ├── CalendarViewModel.kt
+                                  │   │   └── EventEditActivity.kt
+                                  │   ├── bills/
+                                  │   │   ├── BillsFragment.kt
+                                  │   │   ├── BillsViewModel.kt
+                                  │   │   └── BillEditActivity.kt
+                                  │   ├── capture/
+                                  │   │   ├── CaptureFragment.kt
+                                  │   │   └── CaptureViewModel.kt
+                                  │   ├── transfer/
+                                  │   │   ├── TransferFragment.kt
+                                  │   │   └── TransferViewModel.kt
+                                  │   └── agent/
+                                  │       ├── AgentFragment.kt
+                                  │       └── AgentViewModel.kt
+                                  ├── voice/
+                                  │   ├── VoiceListenerService.kt
+                                  │   ├── IntentParser.kt
+                                  │   └── AgentDispatcher.kt
+                                  ├── transfer/
+                                  │   ├── FileTransferManager.kt
+                                  │   └── BudgetBlasterBridge.kt
+                                  ├── alerts/
+                                  │   ├── AlertScheduler.kt
+                                  │   ├── AlertReceiver.kt
+                                  │   └── AlertNotificationBuilder.kt
+                                  ├── service/
+                                  │   └── SchedulaizerService.kt
+                                  └── util/
+                                      ├── PriorityLevel.kt
+                                      ├── DateUtils.kt
+                                      └── FileUtils.kt
+
+--------------------------------------------------------------------------------
+PACKAGE MAP
+--------------------------------------------------------------------------------
+
+Root package: com.baxter.schedulaizer
+
+  com.baxter.schedulaizer
+    └── SchedulaizerApp.kt
+          Application subclass. Initializes the Room database singleton and
+          provides global access to repositories.
+
+  com.baxter.schedulaizer.data.db
+    └── SchedulaizerDatabase.kt
+          @Database annotated Room class. Lists all entity classes. Exposes
+          DAO accessors. Version 1 with migration stubs for future versions.
+    └── TypeConverters.kt
+          Room @TypeConverter functions for Long<->Date and List<->String.
+
+  com.baxter.schedulaizer.data.db.entity
+    └── EventEntity, BillEntity, MemoEntity, AttachmentEntity, AlertEntity
+          @Entity annotated data classes. One per table.
+
+  com.baxter.schedulaizer.data.db.dao
+    └── EventDao, BillDao, MemoDao, AttachmentDao, AlertDao
+          @Dao annotated interfaces. All read queries return Flow<List<T>>.
+          Write operations are suspend functions.
+
+  com.baxter.schedulaizer.data.repository
+    └── EventRepository, BillRepository, AttachmentRepository
+          Plain classes (not interfaces). Injected via SchedulaizerApp.
+          Contain business logic: sorting, filtering, next-due calculation.
+          Expose StateFlow / Flow to ViewModels.
+
+  com.baxter.schedulaizer.util
+    └── PriorityLevel.kt    — enum class
+    └── DateUtils.kt        — object singleton
+    └── FileUtils.kt        — object singleton
+
+  com.baxter.schedulaizer.service
+    └── SchedulaizerService.kt
+          Foreground Service. Manages tunnel session lifecycle. Starts on boot.
+
+  com.baxter.schedulaizer.alerts
+    └── AlertScheduler.kt          — schedules WorkManager + AlarmManager items
+    └── AlertReceiver.kt           — BroadcastReceiver for exact alarms
+    └── AlertNotificationBuilder.kt — builds NotificationCompat objects
+
+  com.baxter.schedulaizer.transfer
+    └── FileTransferManager.kt     — queues and sends files via RD tunnel
+    └── BudgetBlasterBridge.kt     — packages receipt payloads, HTTP POST
+
+  com.baxter.schedulaizer.voice
+    └── VoiceListenerService.kt    — wraps Android SpeechRecognizer
+    └── IntentParser.kt            — maps utterances to SchedulerIntent
+    └── AgentDispatcher.kt         — routes intents to repository actions
+
+  com.baxter.schedulaizer.ui
+    └── MainActivity.kt            — BottomNavigationView host activity
+    └── calendar/CalendarFragment.kt + CalendarViewModel.kt + EventEditActivity.kt
+    └── bills/BillsFragment.kt + BillsViewModel.kt + BillEditActivity.kt
+    └── capture/CaptureFragment.kt + CaptureViewModel.kt
+    └── transfer/TransferFragment.kt + TransferViewModel.kt
+    └── agent/AgentFragment.kt + AgentViewModel.kt
+
+--------------------------------------------------------------------------------
+BOTTOM NAVIGATION — 5 TABS
+--------------------------------------------------------------------------------
+
+Tab order (left to right):
+  1. Calendar     — fragment_calendar    — icon: ic_calendar_month
+  2. Bills        — fragment_bills       — icon: ic_receipt_long
+  3. Capture      — fragment_capture     — icon: ic_add_a_photo
+  4. Transfer     — fragment_transfer    — icon: ic_cloud_upload
+  5. Agent        — fragment_agent       — icon: ic_mic
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+None in this block. This is a reference/orientation block only.
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] Agent can recite the full package name without looking: com.baxter.schedulaizer
+[ ] Agent knows exactly which directory jniLibs/ lives in and what goes in it.
+[ ] Agent knows the 5 tab names and their corresponding fragment class names.
+[ ] Agent knows the difference between com.baxter.schedulaizer.transfer
+    (FileTransferManager, BudgetBlasterBridge) and the ui/transfer/ fragment.
+[ ] Agent can map every Kotlin file to its parent package without ambiguity.
+================================================================================

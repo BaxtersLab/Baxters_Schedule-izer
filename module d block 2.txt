@@ -1,0 +1,285 @@
+================================================================================
+BLOCK D-2 — ROOM DAOs
+Module D: Data Layer (Room)
+================================================================================
+
+BLOCK ID:       D-2
+MODULE:         D — Data Layer (Room)
+CRATE:          com.baxter.schedulaizer.data.db.dao
+DEPENDS ON:     D-1
+BUILD ORDER:    9 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block creates the five DAO interfaces — one per entity. DAOs are the only
+layer that talks directly to SQLite via Room. All read queries return
+Flow<List<T>> so ViewModels can observe live database changes. All write
+operations are suspend functions for coroutine-safe execution on the IO
+dispatcher. After this block, every data access pattern the app needs is
+defined as a typed, compile-checked method.
+
+This block does NOT create the Database class (D-3) or Repositories (D-4).
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+
+FILE: app/src/main/java/com/baxter/schedulaizer/data/db/dao/EventDao.kt
+Role: All database operations for the events table.
+
+  @Dao interface EventDao
+
+  Queries:
+
+    @Query("SELECT * FROM events ORDER BY startMs ASC")
+    fun getAllEvents(): Flow<List<EventEntity>>
+      Observes all events sorted by start time ascending.
+      UI subscribes to this for the full event list.
+
+    @Query("SELECT * FROM events WHERE startMs >= :fromMs AND startMs <= :toMs ORDER BY startMs ASC")
+    fun getEventsInRange(fromMs: Long, toMs: Long): Flow<List<EventEntity>>
+      Used by CalendarFragment to load events for a displayed month/week.
+
+    @Query("SELECT * FROM events WHERE startMs >= :fromMs ORDER BY startMs ASC")
+    fun getUpcomingEvents(fromMs: Long): Flow<List<EventEntity>>
+      fromMs is typically DateUtils.todayStartMs(). Returns all future events.
+
+    @Query("SELECT * FROM events WHERE priority <= :maxPriority ORDER BY priority ASC, startMs ASC")
+    fun getEventsByPriority(maxPriority: Int): Flow<List<EventEntity>>
+      maxPriority = 0 returns only CRITICAL. maxPriority = 3 returns all.
+
+    @Query("SELECT * FROM events WHERE id = :id")
+    suspend fun getEventById(id: Long): EventEntity?
+      Returns null if not found. Used by EventEditActivity to load for editing.
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertEvent(event: EventEntity): Long
+      Returns the new row ID. Used by EventRepository.save().
+
+    @Update
+    suspend fun updateEvent(event: EventEntity)
+
+    @Delete
+    suspend fun deleteEvent(event: EventEntity)
+
+    @Query("DELETE FROM events WHERE id = :id")
+    suspend fun deleteEventById(id: Long)
+
+    @Query("SELECT COUNT(*) FROM events WHERE startMs >= :fromMs AND startMs <= :toMs")
+    suspend fun countEventsInRange(fromMs: Long, toMs: Long): Int
+      Used by calendar month grid to show event count badge per day.
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/data/db/dao/BillDao.kt
+Role: All database operations for the bills table.
+
+  @Dao interface BillDao
+
+  Queries:
+
+    @Query("SELECT * FROM bills ORDER BY nextDueMs ASC")
+    fun getAllBills(): Flow<List<BillEntity>>
+      Sorted by next due date — earliest due shown first.
+
+    @Query("SELECT * FROM bills WHERE isPaid = 0 ORDER BY nextDueMs ASC")
+    fun getUnpaidBills(): Flow<List<BillEntity>>
+      Used by BillsFragment default view (unpaid first).
+
+    @Query("SELECT * FROM bills WHERE nextDueMs >= :fromMs AND nextDueMs <= :toMs ORDER BY nextDueMs ASC")
+    fun getBillsDueInRange(fromMs: Long, toMs: Long): Flow<List<BillEntity>>
+      Used by AgentDispatcher for "what bills are due this week" queries.
+
+    @Query("SELECT * FROM bills WHERE id = :id")
+    suspend fun getBillById(id: Long): BillEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertBill(bill: BillEntity): Long
+
+    @Update
+    suspend fun updateBill(bill: BillEntity)
+
+    @Delete
+    suspend fun deleteBill(bill: BillEntity)
+
+    @Query("UPDATE bills SET isPaid = 1, updatedMs = :nowMs WHERE id = :id")
+    suspend fun markPaid(id: Long, nowMs: Long)
+      Direct update query — faster than loading the entity, modifying, and
+      calling updateBill(). Used by BillRepository.markPaid().
+
+    @Query("SELECT SUM(amountCents) FROM bills WHERE isPaid = 0 AND nextDueMs <= :endMs")
+    suspend fun sumUnpaidAmountCentsUpTo(endMs: Long): Long?
+      Returns total amount due up to a date. Null if no bills. Used by
+      BillsViewModel for the "total due this month" summary.
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/data/db/dao/MemoDao.kt
+Role: All database operations for the memos table.
+
+  @Dao interface MemoDao
+
+  Queries:
+
+    @Query("SELECT * FROM memos ORDER BY createdMs DESC")
+    fun getAllMemos(): Flow<List<MemoEntity>>
+
+    @Query("SELECT * FROM memos WHERE parentId = :parentId AND parentType = :parentType ORDER BY createdMs DESC")
+    fun getMemosForParent(parentId: Long, parentType: String): Flow<List<MemoEntity>>
+      Used to load all notes attached to a specific event or bill.
+
+    @Query("SELECT * FROM memos WHERE parentId = 0 ORDER BY createdMs DESC")
+    fun getStandaloneMemos(): Flow<List<MemoEntity>>
+      Standalone notes with no parent event or bill.
+
+    @Query("SELECT * FROM memos WHERE id = :id")
+    suspend fun getMemoById(id: Long): MemoEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertMemo(memo: MemoEntity): Long
+
+    @Update
+    suspend fun updateMemo(memo: MemoEntity)
+
+    @Delete
+    suspend fun deleteMemo(memo: MemoEntity)
+
+    @Query("DELETE FROM memos WHERE parentId = :parentId AND parentType = :parentType")
+    suspend fun deleteMemosForParent(parentId: Long, parentType: String)
+      Called by EventRepository and BillRepository when a parent is deleted.
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/data/db/dao/AttachmentDao.kt
+Role: All database operations for the attachments table.
+
+  @Dao interface AttachmentDao
+
+  Queries:
+
+    @Query("SELECT * FROM attachments ORDER BY capturedMs DESC")
+    fun getAllAttachments(): Flow<List<AttachmentEntity>>
+
+    @Query("SELECT * FROM attachments WHERE parentId = :parentId AND parentType = :parentType ORDER BY capturedMs DESC")
+    fun getAttachmentsForParent(parentId: Long, parentType: String): Flow<List<AttachmentEntity>>
+
+    @Query("SELECT * FROM attachments WHERE uploadedMs = -1 ORDER BY capturedMs ASC")
+    fun getPendingUploads(): Flow<List<AttachmentEntity>>
+      Returns all attachments not yet uploaded. Observed by FileTransferManager
+      and TransferFragment.
+
+    @Query("SELECT * FROM attachments WHERE isSentToBudgetBlaster = 0 AND mimeType LIKE 'image/%' ORDER BY capturedMs DESC")
+    fun getPendingBudgetBlasterSends(): Flow<List<AttachmentEntity>>
+      Receipt images not yet sent to Budget Blaster.
+
+    @Query("SELECT * FROM attachments WHERE id = :id")
+    suspend fun getAttachmentById(id: Long): AttachmentEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAttachment(attachment: AttachmentEntity): Long
+
+    @Update
+    suspend fun updateAttachment(attachment: AttachmentEntity)
+
+    @Delete
+    suspend fun deleteAttachment(attachment: AttachmentEntity)
+
+    @Query("UPDATE attachments SET uploadedMs = :uploadedMs, uploadDestination = :destination WHERE id = :id")
+    suspend fun markUploaded(id: Long, uploadedMs: Long, destination: String)
+      Called by FileTransferManager after a successful upload.
+
+    @Query("UPDATE attachments SET isSentToBudgetBlaster = 1 WHERE id = :id")
+    suspend fun markSentToBudgetBlaster(id: Long)
+      Called by BudgetBlasterBridge after a successful POST.
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/data/db/dao/AlertDao.kt
+Role: All database operations for the alerts table.
+
+  @Dao interface AlertDao
+
+  Queries:
+
+    @Query("SELECT * FROM alerts WHERE isActive = 1 ORDER BY fireAtMs ASC")
+    fun getActiveAlerts(): Flow<List<AlertEntity>>
+      Observed by AlertScheduler to know what needs rescheduling after reboot.
+
+    @Query("SELECT * FROM alerts WHERE parentId = :parentId AND parentType = :parentType")
+    fun getAlertsForParent(parentId: Long, parentType: String): Flow<List<AlertEntity>>
+
+    @Query("SELECT * FROM alerts WHERE id = :id")
+    suspend fun getAlertById(id: Long): AlertEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAlert(alert: AlertEntity): Long
+      Returns the new row ID. Used by AlertScheduler to assign requestCode.
+
+    @Update
+    suspend fun updateAlert(alert: AlertEntity)
+
+    @Query("UPDATE alerts SET isActive = 0 WHERE id = :id")
+    suspend fun deactivateAlert(id: Long)
+      Called when an alert fires or is dismissed.
+
+    @Query("UPDATE alerts SET isSnoozed = 1, snoozeUntilMs = :snoozeUntilMs WHERE id = :id")
+    suspend fun snoozeAlert(id: Long, snoozeUntilMs: Long)
+
+    @Query("DELETE FROM alerts WHERE parentId = :parentId AND parentType = :parentType")
+    suspend fun deleteAlertsForParent(parentId: Long, parentType: String)
+      Called when the parent event or bill is deleted.
+
+    @Query("SELECT * FROM alerts WHERE isActive = 1 AND fireAtMs <= :nowMs")
+    suspend fun getOverdueAlerts(nowMs: Long): List<AlertEntity>
+      One-shot query (not Flow) used at app startup to catch any alerts that
+      fired while the app was killed.
+
+--------------------------------------------------------------------------------
+DATA FLOW
+--------------------------------------------------------------------------------
+DAO -> Room -> SQLite
+
+All Flow queries are backed by SQLite invalidation tracking. When a write
+occurs on a table, Room automatically invalidates active Flow collectors on
+that table, causing them to re-emit the latest data.
+
+Read path:
+  DAO.getXxx() -> Flow<List<Entity>> -> Repository transforms/filters ->
+  ViewModel StateFlow -> Fragment collects -> UI updates
+
+Write path:
+  Fragment user action -> ViewModel -> Repository.save() ->
+  DAO.insertXxx(entity) -> Room write -> Flow re-emits -> UI refreshes
+
+--------------------------------------------------------------------------------
+SAFETY & SECURITY NOTES
+--------------------------------------------------------------------------------
+- All SQL queries use Room's parameterized binding (":parameter" syntax).
+  No string concatenation in query bodies.
+- deleteEventById, deleteMemosForParent, deleteAlertsForParent are paired
+  operations — Repository must call all three when deleting an event to
+  avoid orphaned records.
+
+--------------------------------------------------------------------------------
+UNIT TESTS — WHAT TO VERIFY
+--------------------------------------------------------------------------------
+- EventDao.insertEvent() returns a positive Long (the new row ID).
+- EventDao.getEventsInRange() emits only events within the specified window.
+- BillDao.markPaid() sets isPaid = 1 for the correct bill only.
+- BillDao.sumUnpaidAmountCentsUpTo() returns null when there are no bills.
+- AttachmentDao.getPendingUploads() returns only attachments with uploadedMs = -1.
+- AttachmentDao.markUploaded() sets uploadedMs correctly; re-query confirms
+  the attachment no longer appears in getPendingUploads().
+- AlertDao.getOverdueAlerts() returns alerts with fireAtMs in the past.
+- All DAO insert + delete round-trips leave the table in the correct state.
+(These tests use Room's in-memory database — see D-3 for test setup.)
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] EventDao.kt compiles with all 9 methods listed above.
+[ ] BillDao.kt compiles with all 9 methods listed above.
+[ ] MemoDao.kt compiles with all 8 methods listed above.
+[ ] AttachmentDao.kt compiles with all 10 methods listed above.
+[ ] AlertDao.kt compiles with all 9 methods listed above.
+[ ] All read queries returning Flow<List<T>> use the correct entity type.
+[ ] All write methods are suspend functions.
+[ ] ./gradlew :app:compileDebugKotlin passes with zero errors on all 5 DAO files.
+================================================================================

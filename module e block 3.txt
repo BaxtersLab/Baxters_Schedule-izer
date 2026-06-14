@@ -1,0 +1,268 @@
+================================================================================
+BLOCK E-3 — FILE TRANSFER MANAGER & BUDGET BLASTER BRIDGE
+Module E: Service & Background
+================================================================================
+
+BLOCK ID:       E-3
+MODULE:         E — Service & Background
+CRATE:          com.baxter.schedulaizer.transfer
+DEPENDS ON:     E-1, D-4
+BUILD ORDER:    14 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block implements the two outbound data pipelines:
+  1. FileTransferManager — uploads any captured file to the homelab PC via
+     the RemoteDexter tunnel.
+  2. BudgetBlasterBridge — packages receipt images as JSON and POSTs them to
+     the Budget Blaster Windows endpoint over LAN HTTP.
+
+After this block, files captured in CaptureFragment can be sent to the homelab
+and receipt images can be forwarded to Budget Blaster for OCR processing.
+
+--------------------------------------------------------------------------------
+EXTERNAL DEPENDENCIES & INTEGRATION POINTS
+--------------------------------------------------------------------------------
+
+FileTransferManager:
+  - TransportBindings.rd_send_file_chunk(data: ByteArray, destinationPath: String): Int
+    Sends a chunk of bytes over the RemoteDexter tunnel.
+    Returns 0 on success, non-zero on error.
+  - TransportBindings.isConnected(): Boolean
+    Checked before each upload attempt.
+  - AttachmentRepository.pendingUploads: Flow<List<AttachmentEntity>>
+    The upload queue. FileTransferManager observes this Flow.
+  - AttachmentRepository.markUploaded(id, destination)
+    Called after each successful upload.
+  - SharedPreferences key PREF_HOMELAB_HOST / PREF_HOMELAB_PORT
+    User-configured homelab address.
+
+BudgetBlasterBridge:
+  - HttpURLConnection (Android standard library) — no external HTTP library.
+    Reason: Retrofit/OkHttp would add ~2 MB to APK; a single POST to a LAN
+    endpoint does not warrant a full HTTP client library.
+  - AttachmentRepository.pendingBudgetBlasterSends: Flow<List<AttachmentEntity>>
+  - AttachmentRepository.markSentToBudgetBlaster(id)
+  - SharedPreferences key PREF_BUDGET_BLASTER_ENDPOINT
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+
+FILE: app/src/main/java/com/baxter/schedulaizer/transfer/FileTransferManager.kt
+Role: Observes the pending upload queue and transfers files to homelab via
+      the RemoteDexter tunnel. Runs on the IO dispatcher.
+
+  object FileTransferManager
+
+  Constants:
+    private const val CHUNK_SIZE = 65_536   // 64 KB per chunk
+
+  Functions:
+
+    fun startObserving(scope: CoroutineScope,
+                       repo: AttachmentRepository,
+                       context: Context)
+      Launches a coroutine in the provided scope (IO dispatcher).
+      Collects repo.pendingUploads as a Flow.
+      For each emitted list, calls uploadNext(context, repo, pending).
+      This is called once from SchedulaizerService.onCreate() to keep the
+      upload queue running as long as the service is alive.
+
+    private suspend fun uploadNext(context: Context,
+                                    repo: AttachmentRepository,
+                                    pending: List<AttachmentEntity>)
+      Filters to attachments where the local file exists on disk.
+      For each attachment (in capturedMs ASC order, oldest first):
+        If !TransportBindings.isConnected(): break (stop trying; wait for next
+          emission when the tunnel reconnects).
+        Calls uploadFile(context, repo, attachment).
+
+    private suspend fun uploadFile(context: Context,
+                                    repo: AttachmentRepository,
+                                    attachment: AttachmentEntity)
+      Reads the file at attachment.localPath into a ByteArray.
+      If the file does not exist: calls repo.markUploaded(attachment.id,
+        "error_file_missing") and returns. (Marks as "uploaded" with error tag
+        to remove it from the pending queue so it doesn't block future uploads.)
+      Constructs destination path on homelab:
+        val host = prefs.getString(PREF_HOMELAB_HOST, "192.168.1.100")
+        val destDir = prefs.getString(PREF_HOMELAB_DEST_DIR, "/schedualizer/")
+        val destPath = "$destDir${attachment.fileName}"
+      Sends the file in chunks:
+        var offset = 0
+        while (offset < bytes.size):
+          val chunk = bytes.copyOfRange(offset, minOf(offset + CHUNK_SIZE, bytes.size))
+          val result = TransportBindings.rd_send_file_chunk(chunk, destPath)
+          if result != 0: throws IOException("Chunk send failed: $result")
+          offset += chunk.size
+      On success: calls repo.markUploaded(attachment.id, "homelab").
+      On IOException: logs the error, does NOT mark uploaded.
+        The attachment stays in the pending queue and will be retried next time
+        the Flow emits (i.e., when the tunnel reconnects or a new upload is added).
+      Retry limit: FileTransferManager tracks a retryCount map (Map<Long, Int>)
+        in memory. After MAX_UPLOAD_RETRY (from AppConstants) failures, calls
+        repo.markUploaded(attachment.id, "error_max_retries") to remove from queue.
+
+    fun getDestDir(context: Context): String
+      Reads PREF_HOMELAB_DEST_DIR from SharedPreferences.
+      Returns "/schedualizer/" as default.
+
+    Note: A PREF_HOMELAB_DEST_DIR key should be added to AppConstants in C-1
+    during implementation. Add: PREF_HOMELAB_DEST_DIR = "homelab_dest_dir".
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/transfer/BudgetBlasterBridge.kt
+Role: Packages receipt images as a JSON payload and POSTs to the Budget Blaster
+      Windows HTTP endpoint.
+
+  object BudgetBlasterBridge
+
+  Payload structure (JSON):
+    {
+      "date": "2026-06-08",              // ISO date of capture
+      "amount_hint": "",                 // optional — extracted from text/OCR
+      "category": "BILLS",               // EventCategory.name
+      "filename": "receipt_12345.jpg",
+      "image_base64": "..."             // Base64-encoded image bytes
+    }
+
+  Functions:
+
+    fun startObserving(scope: CoroutineScope,
+                       repo: AttachmentRepository,
+                       context: Context)
+      Launches a coroutine in scope (IO dispatcher).
+      Collects repo.pendingBudgetBlasterSends.
+      For each list, calls sendNext(context, repo, pending).
+
+    private suspend fun sendNext(context: Context,
+                                  repo: AttachmentRepository,
+                                  pending: List<AttachmentEntity>)
+      For each attachment in the list:
+        Calls sendToBudgetBlaster(context, repo, attachment).
+        On success: continues to next.
+        On IOException: logs error, breaks loop (stops sending; retries next
+          emission).
+
+    private suspend fun sendToBudgetBlaster(context: Context,
+                                             repo: AttachmentRepository,
+                                             attachment: AttachmentEntity)
+      Reads file bytes from attachment.localPath.
+      If file not found: calls repo.markSentToBudgetBlaster(attachment.id) to
+        clear from queue (file is gone; can't send it).
+      Encodes bytes as Base64: Base64.encodeToString(bytes, Base64.NO_WRAP).
+      Builds JSON string manually (no JSON library dependency):
+        val json = buildJsonPayload(attachment, base64)
+      Reads endpoint from SharedPreferences (PREF_BUDGET_BLASTER_ENDPOINT).
+      Opens HttpURLConnection to the endpoint:
+        val url = URL(endpoint)
+        val conn = url.openConnection() as HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.setRequestProperty("Content-Type", "application/json")
+        conn.setRequestProperty("Accept", "application/json")
+        conn.doOutput = true
+        conn.connectTimeout = 5_000   // 5 seconds — LAN should be fast
+        conn.readTimeout = 10_000
+      Writes JSON bytes to conn.outputStream.
+      Checks conn.responseCode:
+        200 or 201: calls repo.markSentToBudgetBlaster(attachment.id). Done.
+        Other: throws IOException("Unexpected response: ${conn.responseCode}")
+      Always calls conn.disconnect() in a finally block.
+
+    private fun buildJsonPayload(attachment: AttachmentEntity,
+                                  base64: String): String
+      Constructs the JSON string manually using string templates.
+      Uses DateUtils.formatDate(attachment.capturedMs) for the date field.
+      Escapes any double-quote characters in attachment.fileName using
+      replace("\"", "\\\"") before embedding in JSON.
+      Returns the complete JSON string.
+
+    Note on amount_hint: In v1, amount_hint is always an empty string.
+      A future block can add receipt OCR pre-processing to extract amounts
+      before sending. Budget Blaster performs its own OCR on the image.
+
+--------------------------------------------------------------------------------
+DATA FLOW
+--------------------------------------------------------------------------------
+Capture -> AttachmentEntity inserted with uploadedMs=-1, isSentToBudgetBlaster=0
+
+FileTransferManager path:
+  pendingUploads Flow emits -> uploadFile() -> rd_send_file_chunk() (loop)
+  -> markUploaded() -> pendingUploads Flow re-emits (attachment gone)
+
+BudgetBlasterBridge path:
+  pendingBudgetBlasterSends Flow emits -> sendToBudgetBlaster()
+  -> Base64 encode -> HTTP POST -> markSentToBudgetBlaster()
+  -> pendingBudgetBlasterSends Flow re-emits (attachment gone)
+
+Both paths run independently and concurrently — an attachment can be uploaded
+to homelab AND sent to Budget Blaster. The two flags are independent.
+
+--------------------------------------------------------------------------------
+INTERFACES EXPOSED
+--------------------------------------------------------------------------------
+- FileTransferManager.startObserving(scope, repo, context)
+    Called by SchedulaizerService.onCreate() (E-1) after tunnel init.
+- BudgetBlasterBridge.startObserving(scope, repo, context)
+    Called by SchedulaizerService.onCreate() (E-1) after tunnel init.
+- FileTransferManager.getDestDir(context): String
+    Read by TransferFragment (G-5) to display current homelab destination.
+
+--------------------------------------------------------------------------------
+DESIGN DECISIONS
+--------------------------------------------------------------------------------
+- Chunk size of 64 KB balances throughput and memory — avoids loading large
+  receipt images (5–10 MB) entirely into memory before the first byte is sent.
+- HttpURLConnection used for Budget Blaster POST — no external HTTP lib needed
+  for a single LAN endpoint. See A-1 Decision 5.
+- JSON built manually — no Gson/Moshi dependency for a single payload type.
+  The payload structure is fixed; there is no polymorphism or complex nesting.
+- Both managers are Kotlin objects (singletons) because only one instance of
+  each should ever run. Lifecycle is tied to SchedulaizerService.
+
+--------------------------------------------------------------------------------
+SAFETY & SECURITY NOTES
+--------------------------------------------------------------------------------
+- Image bytes are Base64-encoded in memory. For large files (> 10 MB), this
+  doubles memory use. In v1 this is acceptable. A future block can add
+  streaming Base64 encoding if needed.
+- The Budget Blaster POST does NOT include auth tokens. Security relies on:
+    1. The RemoteDexter tunnel for homelab transport (encrypted).
+    2. LAN isolation — the endpoint is only reachable on the local network.
+  If Budget Blaster is exposed to the internet, the user must add auth in v2.
+- PREF_BUDGET_BLASTER_ENDPOINT is read from SharedPreferences at send time,
+  not cached. This allows the user to change the IP in Settings without
+  restarting the app.
+- conn.connectTimeout = 5000ms prevents the coroutine from hanging if the
+  homelab is offline. IOException is caught by sendNext().
+
+--------------------------------------------------------------------------------
+UNIT TESTS — WHAT TO VERIFY
+--------------------------------------------------------------------------------
+- buildJsonPayload() produces valid JSON for a standard attachment.
+- buildJsonPayload() correctly escapes a filename containing a double-quote.
+- FileTransferManager does NOT attempt uploadFile() when
+  TransportBindings.isConnected() returns false.
+- FileTransferManager marks attachment as "error_file_missing" when the
+  local file does not exist at attachment.localPath.
+- FileTransferManager marks attachment as "error_max_retries" after
+  MAX_UPLOAD_RETRY consecutive failures.
+- BudgetBlasterBridge marks attachment as sent when the mock server returns 200.
+- BudgetBlasterBridge does NOT mark attachment as sent when mock returns 500.
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] FileTransferManager.kt compiles with startObserving, uploadNext,
+    uploadFile, getDestDir, in-memory retryCount map.
+[ ] BudgetBlasterBridge.kt compiles with startObserving, sendNext,
+    sendToBudgetBlaster, buildJsonPayload.
+[ ] Both objects are called from SchedulaizerService.onCreate() (E-1 updated).
+[ ] buildJsonPayload() unit test for JSON structure passes.
+[ ] uploadFile() stops after MAX_UPLOAD_RETRY failures (unit test passes).
+[ ] HttpURLConnection uses 5s connect timeout and 10s read timeout.
+[ ] conn.disconnect() is always called in a finally block.
+[ ] ./gradlew :app:compileDebugKotlin passes for both files.
+================================================================================

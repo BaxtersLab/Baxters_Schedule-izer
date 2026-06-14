@@ -1,0 +1,158 @@
+================================================================================
+BLOCK D-3 — ROOM DATABASE CLASS & TYPE CONVERTERS
+Module D: Data Layer (Room)
+================================================================================
+
+BLOCK ID:       D-3
+MODULE:         D — Data Layer (Room)
+CRATE:          com.baxter.schedulaizer.data.db
+DEPENDS ON:     D-2
+BUILD ORDER:    10 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block creates SchedulaizerDatabase — the Room @Database class — and
+TypeConverters. After this block, the database can be instantiated
+(via SchedulaizerApp) and all five tables are created on first open.
+The in-memory database variant used by unit tests is also prepared here.
+
+This block does NOT write repositories (D-4). It does NOT write migration
+logic beyond stubs — migrations are a v2 concern.
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+
+FILE: app/src/main/java/com/baxter/schedulaizer/data/db/SchedulaizerDatabase.kt
+Role: The Room database class. Lists all entities and DAO accessors.
+      Singleton managed by SchedulaizerApp via lazy {}.
+
+  @Database annotation:
+    entities = [
+      EventEntity::class,
+      BillEntity::class,
+      MemoEntity::class,
+      AttachmentEntity::class,
+      AlertEntity::class
+    ]
+    version = 1
+    exportSchema = false
+      Reason: Schema export is for migration tooling. Not needed in v1.
+              Set to true in v2 when migrations are implemented.
+
+  @TypeConverters(TypeConverters::class)
+    Registers the TypeConverters class for the database.
+
+  abstract class SchedulaizerDatabase : RoomDatabase()
+
+  Abstract DAO accessors (Room generates implementations):
+    abstract fun eventDao(): EventDao
+    abstract fun billDao(): BillDao
+    abstract fun memoDao(): MemoDao
+    abstract fun attachmentDao(): AttachmentDao
+    abstract fun alertDao(): AlertDao
+
+  companion object:
+    @Volatile private var INSTANCE: SchedulaizerDatabase? = null
+
+    fun getInstance(context: Context): SchedulaizerDatabase
+      Thread-safe singleton using double-checked locking.
+      Body:
+        INSTANCE ?: synchronized(this) {
+            INSTANCE ?: Room.databaseBuilder(
+                context.applicationContext,
+                SchedulaizerDatabase::class.java,
+                "schedualizer.db"
+            )
+            .fallbackToDestructiveMigration()
+            .build()
+            .also { INSTANCE = it }
+        }
+
+      Note: fallbackToDestructiveMigration() is used in v1 ONLY.
+      This means: if the schema version changes and no migration is provided,
+      Room will drop and recreate all tables. Acceptable in v1 development;
+      must be replaced with explicit migration paths before any production
+      data is stored.
+
+    fun buildInMemory(context: Context): SchedulaizerDatabase
+      For unit tests only. Creates an in-memory database that is destroyed
+      when the test process ends.
+      Body:
+        Room.inMemoryDatabaseBuilder(
+            context,
+            SchedulaizerDatabase::class.java
+        )
+        .allowMainThreadQueries()  // Tests only — never in production code.
+        .build()
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/data/db/TypeConverters.kt
+Role: Converts types that Room cannot store natively to/from storable primitives.
+
+  class TypeConverters
+
+  Note: Room stores Long, Int, String, Boolean, Double natively.
+  The entities in D-1 use only these types, so no complex converters are needed
+  in v1. However, the class must exist because @TypeConverters is declared on
+  the Database class. Future converters will be added here.
+
+  Converters (v1 — minimal set):
+
+    @TypeConverter
+    fun fromTimestamp(value: Long?): Long?
+      Pass-through. Included as a placeholder to confirm the converter
+      class is wired correctly. Returns value unchanged.
+
+    @TypeConverter
+    fun dateToTimestamp(date: Long?): Long?
+      Pass-through. Paired with fromTimestamp.
+
+  Note for future versions: if List<String> fields are added to any entity,
+  a fromStringList(value: String): List<String> converter will be needed here.
+  Use Gson or a simple comma-join (ensuring comma is not in data values).
+
+--------------------------------------------------------------------------------
+DESIGN DECISIONS
+--------------------------------------------------------------------------------
+- exportSchema = false in v1 to avoid committing schema JSON files during
+  rapid development. Must be changed to true before adding migrations.
+- fallbackToDestructiveMigration() accepted in v1 because no production data
+  exists yet. The first real user data won't be stored until M9 (APK release).
+- Singleton via companion object rather than Hilt — consistent with C-1
+  Decision 4 (no DI framework in v1).
+- buildInMemory() is a companion function rather than a test helper class
+  to keep test infrastructure close to the production class.
+
+--------------------------------------------------------------------------------
+UNIT TESTS — WHAT TO VERIFY
+--------------------------------------------------------------------------------
+Tests use buildInMemory(). All tests run on a robolectric or androidTest runner.
+
+- SchedulaizerDatabase.getInstance() returns the same instance on repeated calls
+  (singleton behavior).
+- After inserting one EventEntity, getAllEvents() emits a list of size 1.
+- After inserting one BillEntity, getAllBills() emits a list of size 1.
+- After inserting one AttachmentEntity with uploadedMs = -1,
+  getPendingUploads() emits it; after markUploaded(), it no longer appears.
+- After inserting an AlertEntity, getActiveAlerts() emits it; after
+  deactivateAlert(), it no longer appears in the active list.
+- The database schema has exactly 5 tables: events, bills, memos, attachments,
+  alerts. (Verifiable via SupportSQLiteDatabase.query("SELECT name FROM
+  sqlite_master WHERE type='table'").)
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] SchedulaizerDatabase.kt compiles with @Database listing all 5 entities.
+[ ] All 5 abstract DAO accessors are present.
+[ ] companion object provides getInstance() and buildInMemory().
+[ ] TypeConverters.kt compiles with the two pass-through converters.
+[ ] @TypeConverters(TypeConverters::class) is declared on the @Database class.
+[ ] SchedulaizerApp.kt (C-1) correctly calls SchedulaizerDatabase.getInstance()
+    rather than buildInMemory().
+[ ] ./gradlew :app:compileDebugKotlin passes for all files in this block.
+[ ] Unit tests for insert + query round-trips on all 5 DAOs pass using
+    buildInMemory().
+================================================================================

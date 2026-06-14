@@ -1,0 +1,420 @@
+================================================================================
+BLOCK H-1 — EMOJI URGENCY ALERT SYSTEM
+Module H: Urgency Engine
+================================================================================
+
+BLOCK ID:       H-1
+MODULE:         H — Urgency Engine
+CRATE:          com.baxter.schedulaizer.urgency
+DEPENDS ON:     G-2, G-3, C-1
+BUILD ORDER:    23 of 23
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block implements the Emoji Urgency Alert System — a visual feedback layer
+that shows the user their current workload pressure through a spectrum of emoji
+faces. The urgency level is computed from the count of pending items (overdue
+bills + events due today + unread alerts). It drives: the app launcher icon
+(adaptive icon layers swapped at runtime), the persistent service notification
+face, a badge in MainActivity's toolbar, and the bottom nav FAB tint.
+
+Zero pending items = calm happy face. As items accumulate the face degrades
+through neutral → stressed → panicked → overwhelmed. Seven or more = the
+maximum urgency state.
+
+This block does NOT add new data — it reads from existing repositories.
+It does NOT change any entity schemas.
+
+--------------------------------------------------------------------------------
+URGENCY SCALE SPECIFICATION
+--------------------------------------------------------------------------------
+
+Level 0 — CLEAR
+  Pending count: 0
+  Emoji: 😊✅  (smiling face + green check)
+  Meaning: Nothing urgent. All bills paid, no overdue events.
+  Color tint: #4CAF50 (green)
+  App icon: baseline happy (ic_urgency_0.xml)
+
+Level 1 — NEUTRAL
+  Pending count: 1
+  Emoji: 🙂   (slightly smiling)
+  Meaning: One minor item.
+  Color tint: #8BC34A (light green)
+  App icon: ic_urgency_1.xml
+
+Level 2 — FLAT
+  Pending count: 2
+  Emoji: 😐   (flat / neutral mouth)
+  Meaning: A couple of things to handle.
+  Color tint: #FFC107 (amber)
+  App icon: ic_urgency_2.xml
+
+Level 3 — STRESSED
+  Pending count: 3–4
+  Emoji: 😰   (stressed face with sweat drop)
+  Meaning: Several items piling up.
+  Color tint: #FF9800 (orange)
+  App icon: ic_urgency_3.xml
+
+Level 4 — PANIC
+  Pending count: 5
+  Emoji: 😱   (face screaming in fear)
+  Meaning: Too many things pending at once.
+  Color tint: #F44336 (red)
+  App icon: ic_urgency_4.xml
+
+Level 5 — SHOCK
+  Pending count: 6
+  Emoji: 😮   (face with open mouth — :O)
+  Meaning: Critical overload.
+  Color tint: #D32F2F (deep red)
+  App icon: ic_urgency_5.xml
+
+Level 6 — OVERWHELMED
+  Pending count: 7+
+  Emoji: 😵   (face with crossed-out eyes — xx eyes)
+  Meaning: Maximum urgency. Immediate action required.
+  Color tint: #B71C1C (darkest red)
+  App icon: ic_urgency_6.xml
+
+--------------------------------------------------------------------------------
+WHAT COUNTS AS A "PENDING ITEM"
+--------------------------------------------------------------------------------
+The urgency count is the sum of:
+  1. Overdue bills: BillEntity where isPaid = false AND nextDueMs < todayStartMs()
+  2. Bills due today: BillEntity where isPaid = false AND nextDueMs is within today
+  3. Events starting today or overdue: EventEntity where startMs <= todayEndMs()
+     AND startMs >= todayStartMs() (today's events that haven't been dismissed)
+  4. Active critical/high alerts: AlertEntity where isActive = true AND
+     priority <= HIGH (0 or 1) AND fireAtMs <= nowMs() + 1 hour
+     (alerts firing imminently or already fired and unacknowledged)
+
+The count does NOT include:
+  - Future bills not yet due
+  - Events more than 1 day away
+  - Low/normal priority items (they are shown in UI but don't raise urgency)
+  - Items the user has already marked paid or dismissed
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+
+FILE: app/src/main/java/com/baxter/schedulaizer/urgency/UrgencyLevel.kt
+Role: Enum defining the 7 urgency levels with all display data.
+
+  enum class UrgencyLevel(
+    val level: Int,
+    val emoji: String,
+    val label: String,
+    val colorHex: String,
+    val minCount: Int,
+    val maxCount: Int   // Int.MAX_VALUE for the top level
+  )
+
+  Values:
+    CLEAR        (0, "😊✅", "All clear",      "#4CAF50", 0,  0)
+    NEUTRAL      (1, "🙂",   "1 item",          "#8BC34A", 1,  1)
+    FLAT         (2, "😐",   "2 items",         "#FFC107", 2,  2)
+    STRESSED     (3, "😰",   "3-4 items",       "#FF9800", 3,  4)
+    PANIC        (4, "😱",   "5 items",         "#F44336", 5,  5)
+    SHOCK        (5, "😮",   "6 items",         "#D32F2F", 6,  6)
+    OVERWHELMED  (6, "😵",   "7+ items",        "#B71C1C", 7,  Int.MAX_VALUE)
+
+  companion object:
+    fun fromCount(count: Int): UrgencyLevel
+      Returns the UrgencyLevel whose minCount <= count <= maxCount.
+      Iterates values() in reverse order (OVERWHELMED first) for efficiency.
+      Returns CLEAR if count <= 0.
+
+    fun iconResName(level: UrgencyLevel): String
+      Returns the drawable resource name string: "ic_urgency_${level.level}"
+      Used when loading the icon dynamically.
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/urgency/UrgencyEngine.kt
+Role: Computes the current urgency count from live repository data and exposes
+      it as a StateFlow. This is the single source of truth for urgency state.
+
+  object UrgencyEngine
+
+  Private state:
+    private val _urgencyLevel = MutableStateFlow(UrgencyLevel.CLEAR)
+    val urgencyLevel: StateFlow<UrgencyLevel> = _urgencyLevel.asStateFlow()
+
+    private val _pendingCount = MutableStateFlow(0)
+    val pendingCount: StateFlow<Int> = _pendingCount.asStateFlow()
+
+  Functions:
+
+    fun start(scope: CoroutineScope, context: Context)
+      Called once from SchedulaizerService.onCreate() after repositories are ready.
+      Launches a coroutine combining 4 flows:
+        1. billRepo.getAllBills() — filtered to overdue + due today, isPaid=false
+        2. eventRepo.getEventsInRange(todayStartMs, todayEndMs)
+        3. alertDao.getActiveAlerts() — filtered to CRITICAL/HIGH, firing within 1hr
+
+      Uses combine() from kotlinx.coroutines.flow to merge all three:
+        combine(overdueFlow, todayBillsFlow, todayEventsFlow, urgentAlertsFlow)
+        { overdue, todayBills, todayEvents, urgentAlerts ->
+            overdue.size + todayBills.size + todayEvents.size + urgentAlerts.size
+        }
+        .distinctUntilChanged()
+        .collect { count ->
+            _pendingCount.value = count
+            _urgencyLevel.value = UrgencyLevel.fromCount(count)
+        }
+
+      Note: Start is idempotent — calling it a second time after the coroutine
+      is already running does nothing. Track with a private isStarted flag.
+
+    fun stop()
+      Cancels the internal coroutine job. Called from SchedulaizerService.onDestroy().
+
+    private fun buildOverdueFlow(repo: BillRepository): Flow<List<BillEntity>>
+      Returns repo.allBills mapped to filter:
+        isPaid == false AND nextDueMs < DateUtils.todayStartMs()
+
+    private fun buildTodayBillsFlow(repo: BillRepository): Flow<List<BillEntity>>
+      Returns repo.allBills mapped to filter:
+        isPaid == false AND nextDueMs in todayStartMs..todayEndMs
+
+    private fun buildTodayEventsFlow(repo: EventRepository): Flow<List<EventEntity>>
+      Returns repo.getEventsInRange(todayStartMs, todayEndMs)
+
+    private fun buildUrgentAlertsFlow(alertDao: AlertDao): Flow<List<AlertEntity>>
+      Returns alertDao.getActiveAlerts() mapped to filter:
+        fireAtMs <= DateUtils.nowMs() + 3_600_000L  (within next hour)
+        AND (priority == 0 OR priority == 1)  (CRITICAL or HIGH)
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/urgency/UrgencyNotificationUpdater.kt
+Role: Updates the SchedulaizerService foreground notification face emoji when
+      urgency level changes. Also updates the notification color accent.
+
+  object UrgencyNotificationUpdater
+
+  fun update(context: Context, level: UrgencyLevel)
+    Builds an updated foreground notification using NotificationCompat.Builder
+    on channel AppConstants.CHANNEL_SERVICE.
+    Content title: "${level.emoji} Schedualizer"
+    Content text: when (level) {
+        CLEAR       -> "All clear — nothing urgent."
+        NEUTRAL     -> "1 item needs attention."
+        FLAT        -> "2 items pending."
+        STRESSED    -> "${count} items — getting busy."
+        PANIC       -> "5 items — act soon!"
+        SHOCK       -> "6 items — urgent!"
+        OVERWHELMED -> "7+ items — act NOW!"
+    }
+    Color: Color.parseColor(level.colorHex)
+      Set via .setColor(color) on NotificationCompat.Builder.
+    Calls NotificationManagerCompat.from(context).notify(
+        SchedulaizerService.NOTIF_ID, notification).
+
+  Note: update() should only be called when urgency level CHANGES (not every
+  tick). UrgencyEngine uses distinctUntilChanged() to guarantee this.
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/ui/MainActivity.kt  [MODIFY]
+Role: Add urgency emoji badge to the toolbar and observe UrgencyEngine.
+
+  ADD to onCreate() after startSchedulaizerService():
+    observeUrgency()
+
+  ADD private function:
+    private fun observeUrgency()
+      Launches lifecycleScope.launch:
+        UrgencyEngine.urgencyLevel.collect { level ->
+            binding.textUrgencyBadge.text = level.emoji
+            val color = Color.parseColor(level.colorHex)
+            binding.textUrgencyBadge.setTextColor(color)
+        }
+
+  The textUrgencyBadge TextView is added to activity_main.xml (see below).
+
+
+FILE: app/src/main/res/layout/activity_main.xml  [MODIFY]
+Role: Add the urgency emoji badge TextView to the top of the layout.
+
+  ADD inside ConstraintLayout, above the FragmentContainerView:
+    TextView
+      id: textUrgencyBadge
+      text: "😊✅"
+      textSize: 28sp
+      gravity: center
+      layout_width: wrap_content
+      layout_height: wrap_content
+      Constrain: top to top of parent (margin 8dp), end to end of parent (margin 16dp)
+      elevation: 4dp   (floats above the fragment container)
+
+  The FragmentContainerView's top constraint should remain anchored to the
+  top of the parent — the badge floats over the top-right corner of whatever
+  tab is showing.
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/service/SchedulaizerService.kt  [MODIFY]
+Role: Start and stop UrgencyEngine. Observe urgency changes to update notification.
+
+  ADD to onCreate() (after tickHandler.post(tickRunnable)):
+    val appRepos = SchedulaizerApp.get(this)
+    UrgencyEngine.start(
+        scope = serviceScope,   // see below
+        context = this
+    )
+    serviceScope.launch {
+        UrgencyEngine.urgencyLevel.collect { level ->
+            UrgencyNotificationUpdater.update(this@SchedulaizerService, level)
+        }
+    }
+
+  ADD private property:
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+      This scope is tied to the service lifetime.
+
+  ADD to onDestroy() (before super.onDestroy()):
+    UrgencyEngine.stop()
+    serviceScope.cancel()
+
+
+FILE: app/src/main/res/drawable/  [CREATE 7 vector drawables]
+Role: One adaptive icon foreground layer per urgency level.
+
+  Files to create: ic_urgency_0.xml through ic_urgency_6.xml
+  Each is a 108x108dp vector drawable containing the emoji character
+  rendered as text inside a centered TextView-style path, OR using the
+  Unicode code points for the emoji in a <text> element.
+
+  Practical implementation note:
+    Android vector drawables do not natively render emoji glyphs. The correct
+    approach is to use adaptive icons with a bitmap layer approach:
+      Option A (preferred for v1): Use a single launcher icon that is a static
+        PNG/WebP of "😊✅" placed in mipmap-xxxhdpi/ etc. The runtime urgency
+        is shown ONLY via the textUrgencyBadge in MainActivity and the
+        notification — NOT via the actual launcher icon (launcher icons cannot
+        be changed at runtime without complex ShortcutManager tricks).
+      Option B (v2): Use DynamicShortcuts or notification badges to reflect
+        urgency on the launcher icon.
+
+    For v1: Create ic_urgency_0 through ic_urgency_6 as simple XML vector
+    drawables using a circle background in the level's colorHex + a centered
+    number or Unicode text overlay. Use these in the notification and badge only.
+    The launcher icon (ic_launcher) remains the static "😊✅" face.
+
+  Minimum required drawables for this block:
+    ic_urgency_badge.xml — generic badge vector; the emoji text is set
+    programmatically on textUrgencyBadge in MainActivity.
+
+
+FILE: app/src/main/res/mipmap-*/ic_launcher.png  [DOCUMENT — NOT CODE]
+  The app launcher icon should visually represent "😊✅":
+    - Foreground layer: a large yellow circle smiley face (😊 style) with
+      a small green checkmark (✅) in the bottom-right corner.
+    - Background layer: white or light blue circle.
+  This is created as an Image Asset in Android Studio using the Adaptive Icon
+  wizard (File > New > Image Asset > Launcher Icons). The emoji can be
+  screenshotted and used as a custom image, or a Material Design smiley +
+  checkmark SVG can be composed. Exact artwork is outside the scope of this
+  block — this note records the intent.
+
+
+--------------------------------------------------------------------------------
+DATA FLOW
+--------------------------------------------------------------------------------
+SchedulaizerService starts
+  -> UrgencyEngine.start() subscribes to combined flow of bills + events + alerts
+  -> Every DB change triggers recount
+  -> distinctUntilChanged() gates: only level changes propagate
+  -> _urgencyLevel emits new UrgencyLevel
+  -> SchedulaizerService collector: UrgencyNotificationUpdater.update()
+     -> NotificationManager updates the foreground notification face + color
+  -> MainActivity collector (via lifecycleScope): textUrgencyBadge.text = emoji
+
+Result: both the persistent notification AND the in-app badge update live
+whenever the urgency level changes — no polling, no manual refresh.
+
+--------------------------------------------------------------------------------
+INTERFACES EXPOSED
+--------------------------------------------------------------------------------
+- UrgencyLevel enum + UrgencyLevel.fromCount(Int): UrgencyLevel
+    Consumed by UrgencyEngine, UrgencyNotificationUpdater, MainActivity.
+- UrgencyEngine.urgencyLevel: StateFlow<UrgencyLevel>
+    Observed by SchedulaizerService (notification) and MainActivity (badge).
+- UrgencyEngine.pendingCount: StateFlow<Int>
+    Available for display — can be shown as a number badge on the bottom nav
+    in a future polish pass.
+- UrgencyEngine.start(scope, context) / stop()
+    Called by SchedulaizerService lifecycle.
+- UrgencyNotificationUpdater.update(context, level)
+    Called by SchedulaizerService whenever urgencyLevel changes.
+
+--------------------------------------------------------------------------------
+DESIGN DECISIONS
+--------------------------------------------------------------------------------
+- Counting logic defined in "WHAT COUNTS AS A PENDING ITEM" section above is
+  intentionally conservative: only today's items and imminent alerts count.
+  Future items do not raise urgency. Reason: the user should not feel panicked
+  about bills due next week — urgency is a NOW indicator, not a full backlog view.
+- distinctUntilChanged() prevents notification spam. The notification is only
+  rebuilt when the level actually changes (0->1, 2->3, etc.), not on every
+  DB write.
+- Launcher icon is static (cannot be changed at runtime without ShortcutManager).
+  The urgency face is surfaced via the notification and the in-app badge instead.
+  This is the standard Android approach and does not require any special permissions.
+- UrgencyEngine is an object (singleton) because there is exactly one urgency
+  state for the app at any time.
+- The emoji strings are stored directly in the UrgencyLevel enum as String
+  literals using Unicode emoji characters. No resource IDs needed — Kotlin
+  strings support emoji natively.
+
+--------------------------------------------------------------------------------
+SAFETY & SECURITY NOTES
+--------------------------------------------------------------------------------
+- Color.parseColor() on a hardcoded hex string in UrgencyLevel cannot fail
+  (strings are compile-time constants). No try/catch needed.
+- UrgencyEngine reads from existing flows — it performs no writes.
+  It cannot corrupt any data.
+- serviceScope uses SupervisorJob() so a crash in the urgency observer does
+  not cancel the transport tick coroutine in SchedulaizerService.
+
+--------------------------------------------------------------------------------
+UNIT TESTS — WHAT TO VERIFY
+--------------------------------------------------------------------------------
+- UrgencyLevel.fromCount(0) returns CLEAR.
+- UrgencyLevel.fromCount(1) returns NEUTRAL.
+- UrgencyLevel.fromCount(2) returns FLAT.
+- UrgencyLevel.fromCount(3) returns STRESSED.
+- UrgencyLevel.fromCount(4) returns STRESSED.
+- UrgencyLevel.fromCount(5) returns PANIC.
+- UrgencyLevel.fromCount(6) returns SHOCK.
+- UrgencyLevel.fromCount(7) returns OVERWHELMED.
+- UrgencyLevel.fromCount(100) returns OVERWHELMED.
+- UrgencyLevel.fromCount(-1) returns CLEAR (negative count clamps to CLEAR).
+- UrgencyEngine emits CLEAR when all bills are paid and no events today.
+- UrgencyEngine emits FLAT (count=2) when 1 overdue bill + 1 event today.
+- UrgencyEngine emits OVERWHELMED when 7 overdue bills are present.
+- UrgencyNotificationUpdater.update() produces a notification with title
+  containing the correct emoji for each level.
+- MainActivity textUrgencyBadge shows "😊✅" on launch with empty DB.
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] UrgencyLevel.kt compiles with 7 enum values and fromCount() with correct
+    boundary conditions (3-4 both return STRESSED, 7+ returns OVERWHELMED).
+[ ] UrgencyEngine.kt compiles with start(), stop(), and combined flow logic.
+[ ] UrgencyEngine uses distinctUntilChanged() — confirmed in source.
+[ ] UrgencyNotificationUpdater.kt compiles and sets notification color via
+    .setColor(Color.parseColor(level.colorHex)).
+[ ] SchedulaizerService.kt starts UrgencyEngine in onCreate() and stops it
+    in onDestroy(). serviceScope uses SupervisorJob().
+[ ] MainActivity.kt observes UrgencyEngine.urgencyLevel and updates
+    textUrgencyBadge text and color.
+[ ] activity_main.xml has textUrgencyBadge TextView in top-right corner.
+[ ] All 10 UrgencyLevel.fromCount() unit tests pass.
+[ ] UrgencyEngine integration test: 7 overdue bills -> OVERWHELMED emitted.
+[ ] ./gradlew :app:assembleDebug builds with zero errors after all modifications.
+[ ] Visual check on emulator: badge shows "😊✅" with green tint on empty DB;
+    after inserting 7 overdue bills, badge changes to "😵" with dark red tint.
+================================================================================

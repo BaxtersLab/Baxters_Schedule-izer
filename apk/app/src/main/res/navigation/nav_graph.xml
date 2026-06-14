@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/nav_graph"
+    app:startDestination="@id/calendarFragment">
+
+    <fragment
+        android:id="@+id/calendarFragment"
+        android:name="com.baxter.schedulaizer.ui.calendar.CalendarFragment"
+        android:label="Calendar" />
+
+    <fragment
+        android:id="@+id/billsFragment"
+        android:name="com.baxter.schedulaizer.ui.bills.BillsFragment"
+        android:label="Bills" />
+
+    <fragment
+        android:id="@+id/captureFragment"
+        android:name="com.baxter.schedulaizer.ui.capture.CaptureFragment"
+        android:label="Capture" />
+
+    <fragment
+        android:id="@+id/transferFragment"
+        android:name="com.baxter.schedulaizer.ui.transfer.TransferFragment"
+        android:label="Transfer" >
+        <argument
+            android:name="attachmentId"
+            app:argType="long" />
+        <deepLink
+            app:uri="schedulaizer://transfer/{attachmentId}" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/transferDetailsFragment"
+        android:name="com.baxter.schedulaizer.ui.transfer.TransferDetailsFragment"
+        android:label="Transfer Details">
+        <argument
+            android:name="attachmentId"
+            app:argType="long" />
+        <deepLink
+            app:uri="schedulaizer://transfer/details/{attachmentId}" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/backgroundTransfersFragment"
+        android:name="com.baxter.schedulaizer.ui.transfer.BackgroundTransfersFragment"
+        android:label="Background Transfers">
+        <deepLink
+            app:uri="schedulaizer://transfers" />
+        <action
+            android:id="@+id/action_backgroundTransfersFragment_to_transferDetailsFragment"
+            app:destination="@id/transferDetailsFragment" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/agentFragment"
+        android:name="com.baxter.schedulaizer.ui.agent.AgentFragment"
+        android:label="Agent" />
+
+</navigation>

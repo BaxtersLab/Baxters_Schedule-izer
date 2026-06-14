@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primaryColor">#82B1FF</color>
+    <color name="nav_inactive">#B0B0B0</color>
+    <color name="nav_ripple">#33FFFFFF</color>
+</resources>

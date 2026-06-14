@@ -1,0 +1,215 @@
+================================================================================
+BLOCK E-1 — SCHEDUALIZER FOREGROUND SERVICE
+Module E: Service & Background
+================================================================================
+
+BLOCK ID:       E-1
+MODULE:         E — Service & Background
+CRATE:          com.baxter.schedulaizer.service
+DEPENDS ON:     D-4, C-1
+BUILD ORDER:    12 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block creates SchedulaizerService — the app's persistent foreground service.
+It manages the RemoteDexter tunnel session lifecycle (init, tick, shutdown),
+holds a WakeLock during active transfers, and keeps the service alive across
+app backgrounding. The design mirrors RDService from RemoteDexter-v3 but is
+adapted to the Schedualizer package and purpose.
+
+After this block, the app can maintain a persistent background process
+and the RemoteDexter transport session can be initialized and ticked.
+
+This block does NOT implement alert scheduling (E-2) or file transfer (E-3).
+
+--------------------------------------------------------------------------------
+CONTEXT — WHY THIS EXISTS
+--------------------------------------------------------------------------------
+Android kills background processes aggressively. To keep the RemoteDexter
+tunnel alive for file uploads and to ensure alerts are rescheduled if the
+app process is restarted, a foreground Service is required. A foreground
+Service displays a persistent notification and is much less likely to be killed
+by the OS than a background Service.
+
+The pattern is lifted directly from RemoteDexter's RDService.kt: a Handler
+posts a periodic tick to keep the Rust transport layer alive, and a WakeLock
+prevents the CPU from sleeping during active I/O.
+
+--------------------------------------------------------------------------------
+EXTERNAL DEPENDENCIES & INTEGRATION POINTS
+--------------------------------------------------------------------------------
+- RemoteDexter TransportBindings JNI:
+    rd_init_session()         — called once in onCreate()
+    rd_tick()                 — called every 50ms (normal) or 300ms (dozing)
+    rd_shutdown_session()     — called in onDestroy()
+    rd_query_connection_state(): Int — returns 0=Disconnected, 1=Connecting, 2=Connected
+
+  These are the same JNI signatures as in RemoteDexter. The Schedualizer
+  project copies TransportBindings.kt with the package changed to
+  com.baxter.schedulaizer.
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+
+FILE: app/src/main/java/com/baxter/schedulaizer/service/SchedulaizerService.kt
+Role: Foreground service managing tunnel session and wake lock.
+
+  Class: SchedulaizerService : Service()
+
+  Companion object:
+    const val NOTIF_ID = 10
+    const val ACTION_SET_DOZING = "com.baxter.schedulaizer.SET_DOZING"
+    const val ACTION_SCREEN_OFF = "com.baxter.schedulaizer.SCREEN_OFF"
+    const val ACTION_SCREEN_ON  = "com.baxter.schedulaizer.SCREEN_ON"
+    lateinit var instance: SchedulaizerService
+      Set in onCreate(). Allows other components to reach the service instance.
+      Only accessed after the service is confirmed running.
+
+  Private properties:
+    tickHandler: Handler = Handler(Looper.getMainLooper())
+    tickRunnable: Runnable
+      Runnable that calls TransportBindings.rd_tick() then re-posts itself
+      with a delay of 50ms when not dozing, 300ms when dozing.
+    wakeLock: PowerManager.WakeLock?   initially null
+    isDozing: Boolean = false
+
+  Lifecycle:
+
+    onCreate():
+      instance = this
+      TransportBindings.rd_init_session()
+      acquireWakeLock()
+      startForeground(NOTIF_ID, buildNotification())
+      tickHandler.post(tickRunnable)
+
+    onDestroy():
+      tickHandler.removeCallbacks(tickRunnable)
+      TransportBindings.rd_shutdown_session()
+      releaseWakeLock()
+      super.onDestroy()
+
+    onStartCommand(intent, flags, startId): Int
+      Handles three actions:
+        ACTION_SET_DOZING: reads "dozing" Boolean extra, sets isDozing.
+        ACTION_SCREEN_OFF: pauses heavy background tasks if needed.
+        ACTION_SCREEN_ON: resumes normal tick rate.
+      Returns START_STICKY so the OS restarts the service if killed.
+
+    onBind(intent): IBinder?
+      Returns null — not a bound service.
+
+    onTaskRemoved(rootIntent):
+      Posts a restart Intent for itself via startForegroundService().
+      Ensures the service survives swipe-to-dismiss in recents.
+
+  Private functions:
+
+    acquireWakeLock()
+      Gets PowerManager from getSystemService(POWER_SERVICE).
+      Acquires a PARTIAL_WAKE_LOCK tagged "SchedulaizerService::WakeLock".
+      Sets the field wakeLock to the acquired lock.
+
+    releaseWakeLock()
+      Checks wakeLock?.isHeld before calling release(). Never throws.
+
+    buildNotification(): Notification
+      Builds a NotificationCompat notification on channel
+      AppConstants.CHANNEL_SERVICE.
+      Content title: "Schedualizer Active"
+      Content text: "Tunnel connected — ready to upload"
+      Small icon: R.drawable.ic_notification (a small calendar/check icon)
+      Ongoing: true (cannot be dismissed by user swipe)
+      Priority: PRIORITY_LOW (silent, no sound/vibration)
+      Returns the built Notification.
+
+FILE: app/src/main/java/com/baxter/schedulaizer/TransportBindings.kt
+Role: JNI bridge to the RemoteDexter Rust .so. Identical function signatures to
+      RemoteDexter's TransportBindings.kt but in the Schedualizer package.
+
+  object TransportBindings
+
+  External functions (JNI — Rust .so implements these):
+    external fun rd_init_session()
+    external fun rd_tick()
+    external fun rd_shutdown_session()
+    external fun rd_query_connection_state(): Int
+    external fun rd_send_file_chunk(data: ByteArray, destinationPath: String): Int
+      Returns 0 on success, non-zero on error.
+    external fun rd_get_tunnel_state(): String
+      Returns a JSON string describing the tunnel state. Used by
+      TransferFragment for status display.
+
+  companion object:
+    init {
+        System.loadLibrary("remotedexter")
+    }
+    Loads the .so at class initialization time.
+
+  fun isConnected(): Boolean
+    Returns rd_query_connection_state() == 2
+
+--------------------------------------------------------------------------------
+INTERFACES EXPOSED
+--------------------------------------------------------------------------------
+- SchedulaizerService.instance: SchedulaizerService
+    Accessed by FileTransferManager (E-3) to check if the service is running.
+- SchedulaizerService companion action constants: ACTION_SET_DOZING,
+    ACTION_SCREEN_OFF, ACTION_SCREEN_ON — used by PowerStateReceiver if added.
+- TransportBindings.rd_init_session / rd_tick / rd_shutdown_session:
+    Called only by SchedulaizerService.
+- TransportBindings.rd_send_file_chunk: Called by FileTransferManager (E-3).
+- TransportBindings.isConnected(): Called by FileTransferManager (E-3) before
+    attempting an upload.
+- TransportBindings.rd_get_tunnel_state(): Called by TransferViewModel (G-5).
+
+--------------------------------------------------------------------------------
+DESIGN DECISIONS
+--------------------------------------------------------------------------------
+- tick interval: 50ms normal, 300ms dozing — same values as RemoteDexter.
+  These are the values the Rust transport layer was tuned for.
+- START_STICKY: ensures the OS restarts the service with a null intent if killed.
+  SchedulaizerService.onCreate() handles null intent gracefully (no crash).
+- PARTIAL_WAKE_LOCK: keeps CPU alive for network I/O during active uploads.
+  Released in onDestroy() to prevent battery drain if the service is stopped
+  when no uploads are pending.
+- buildNotification() uses PRIORITY_LOW to minimize user annoyance —
+  the service notification is informational only, not actionable.
+
+--------------------------------------------------------------------------------
+SAFETY & SECURITY NOTES
+--------------------------------------------------------------------------------
+- System.loadLibrary("remotedexter") in TransportBindings must succeed at
+  runtime. If the .so files are not in jniLibs/, the app will crash with
+  UnsatisfiedLinkError. The build setup in B-2 ensures they are included.
+- SchedulaizerService does NOT expose a binder or AIDL interface.
+  android:exported="false" in the manifest (B-3) ensures no external app
+  can bind or start it.
+
+--------------------------------------------------------------------------------
+UNIT TESTS — WHAT TO VERIFY
+--------------------------------------------------------------------------------
+- SchedulaizerService can be started as a foreground service without crash
+  (requires an instrumented test or Robolectric with shadow services).
+- buildNotification() returns a Notification with the correct channel ID
+  (AppConstants.CHANNEL_SERVICE).
+- TransportBindings.isConnected() returns false when rd_query_connection_state()
+  returns 0 or 1, and true only when it returns 2.
+
+Note: JNI methods cannot be unit tested without the .so. Tests for
+TransportBindings should use a mock/fake that replaces the JNI calls.
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] SchedulaizerService.kt compiles with onCreate, onDestroy, onStartCommand,
+    onBind, onTaskRemoved, acquireWakeLock, releaseWakeLock, buildNotification.
+[ ] TransportBindings.kt compiles with all 6 external declarations and
+    the System.loadLibrary("remotedexter") init block.
+[ ] TransportBindings.isConnected() is present and correct.
+[ ] ./gradlew :app:compileDebugKotlin passes for both files.
+[ ] The service is registered in AndroidManifest.xml with
+    foregroundServiceType="dataSync" (confirmed from B-3).
+[ ] buildNotification() uses AppConstants.CHANNEL_SERVICE as the channel ID.
+================================================================================

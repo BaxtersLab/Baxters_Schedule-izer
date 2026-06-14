@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Primary action first -->
+    <item
+        android:id="@+id/captureFragment"
+        android:icon="@drawable/ic_photo_camera"
+        android:title="Capture" />
+
+    <item
+        android:id="@+id/calendarFragment"
+        android:icon="@drawable/ic_photo_library"
+        android:title="Calendar" />
+
+    <item
+        android:id="@+id/billsFragment"
+        android:icon="@android:drawable/ic_menu_agenda"
+        android:title="Bills" />
+
+    <!-- Utility / Transfers slot -->
+    <item
+        android:id="@+id/transferFragment"
+        android:icon="@drawable/ic_transfers_state"
+        android:title="Transfers" />
+
+    <item
+        android:id="@+id/backgroundTransfersFragment"
+        android:icon="@drawable/ic_transfers_state"
+        android:title="Background" />
+
+    <!-- Agent / Settings last-ish -->
+    <item
+        android:id="@+id/agentFragment"
+        android:icon="@drawable/ic_settings"
+        android:title="Agent" />
+</menu>

@@ -1,0 +1,256 @@
+================================================================================
+BLOCK G-4 — CAPTURE FRAGMENT & VIEW MODEL
+Module G: UI Layer
+================================================================================
+
+BLOCK ID:       G-4
+MODULE:         G — UI Layer
+CRATE:          com.baxter.schedulaizer.ui.capture
+DEPENDS ON:     G-1, D-4, C-2
+BUILD ORDER:    21 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block implements the Capture tab — the hub for all content ingestion:
+camera receipt photos, gallery picks, voice memos, and text notes. After this
+block, the user can capture any type of content, tag it, attach it to an event
+or bill, and have it queued for homelab upload and/or Budget Blaster submission
+automatically.
+
+This block also creates the FileProvider resource (res/xml/file_provider_paths.xml)
+referenced in the manifest (B-3).
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+
+FILE: app/src/main/java/com/baxter/schedulaizer/ui/capture/CaptureViewModel.kt
+Role: State for the Capture tab. Manages capture actions and attachment list.
+
+  Class: CaptureViewModel(application: Application) : AndroidViewModel(application)
+
+  private val attachRepo = SchedulaizerApp.get(application).attachmentRepository
+  private val db = SchedulaizerApp.get(application).database
+
+  State:
+    val recentAttachments: StateFlow<List<AttachmentEntity>>
+      = attachRepo.allAttachments.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    private val _captureStatus = MutableStateFlow("")
+    val captureStatus: StateFlow<String> = _captureStatus.asStateFlow()
+      Used to show transient messages ("Photo saved", "Note saved", etc.)
+
+  Functions:
+
+    suspend fun saveReceiptPhoto(file: File): Long
+      Creates AttachmentEntity:
+        localPath = file.absolutePath
+        mimeType = "image/jpeg"
+        attachmentType = AttachmentType.RECEIPT_IMAGE.name
+        fileName = file.name
+        capturedMs = DateUtils.nowMs()
+        uploadedMs = -1L
+        isSentToBudgetBlaster = false
+        createdMs = DateUtils.nowMs()
+      Calls attachRepo.save(entity). Returns new ID.
+      Sets _captureStatus to "Receipt photo saved."
+
+    suspend fun saveVoiceMemo(file: File): Long
+      Creates AttachmentEntity with mimeType "audio/m4a",
+      attachmentType = AttachmentType.VOICE_MEMO.name.
+      Calls attachRepo.save(entity). Returns new ID.
+      Sets _captureStatus to "Voice memo saved."
+
+    suspend fun saveTextNote(content: String): Long
+      Calls FileUtils.newTextNoteFile(context, content) to write the file.
+      Creates AttachmentEntity with mimeType "text/plain",
+      attachmentType = AttachmentType.TEXT_NOTE.name.
+      Calls attachRepo.save(entity). Returns new ID.
+      Sets _captureStatus to "Note saved."
+
+    suspend fun saveGalleryImage(uri: Uri, context: Context): Long
+      Copies the image from the content URI to internal storage using
+      FileUtils.newReceiptFile(context) as destination.
+      Reads input stream from context.contentResolver.openInputStream(uri).
+      Writes to the destination file.
+      Calls saveReceiptPhoto(destinationFile). Returns new ID.
+
+    suspend fun attachToParent(attachmentId: Long,
+                                parentId: Long, parentType: String)
+      Loads the attachment, updates parentId and parentType, calls
+      attachRepo.save(updated). This links a newly captured file to an
+      event or bill.
+
+    suspend fun deleteAttachment(attachment: AttachmentEntity)
+      Calls attachRepo.delete(attachment).
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/ui/capture/CaptureFragment.kt
+Role: 4-action capture tab with attachment history list.
+
+  Class: CaptureFragment : Fragment(R.layout.fragment_capture)
+
+  Activity result launchers (registered in onCreate):
+    takePictureLauncher: ActivityResultLauncher<Uri>
+      Uses ActivityResultContracts.TakePicture.
+      On success: viewModel.saveReceiptPhoto(pendingPhotoFile).
+      Creates pendingPhotoFile = FileUtils.newReceiptFile(requireContext()) before launch.
+      Passes FileUtils.getContentUri(requireContext(), pendingPhotoFile) as URI.
+
+    pickGalleryLauncher: ActivityResultLauncher<String>
+      Uses ActivityResultContracts.GetContent with "image/*".
+      On success: uri != null -> viewModel.saveGalleryImage(uri, requireContext()).
+
+    recordAudioLauncher: (NOT a system contract — handled manually)
+      Voice memo recording uses MediaRecorder directly in the fragment.
+      btnStartRecording: starts MediaRecorder, saves to FileUtils.newVoiceMemoFile().
+      btnStopRecording: stops MediaRecorder -> viewModel.saveVoiceMemo(file).
+
+  UI components (FragmentCaptureBinding):
+    btnCamera: Button              — "Take Receipt Photo"
+    btnGallery: Button             — "Pick from Gallery"
+    btnVoiceMemo: Button           — "Record Voice Memo" / "Stop Recording"
+    btnTextNote: Button            — "Write a Note"
+    textCaptureStatus: TextView    — shows _captureStatus messages
+    recyclerViewAttachments: RecyclerView — recent captures list
+
+  Text note flow:
+    btnTextNote -> shows a simple AlertDialog with a multiline EditText.
+    User types note, taps "Save" -> viewModel.saveTextNote(text).
+
+  MediaRecorder lifecycle:
+    private var mediaRecorder: MediaRecorder? = null
+    private var currentVoiceFile: File? = null
+    private var isRecording = false
+
+    startRecording():
+      currentVoiceFile = FileUtils.newVoiceMemoFile(requireContext())
+      mediaRecorder = MediaRecorder().apply {
+          setAudioSource(MediaRecorder.AudioSource.MIC)
+          setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+          setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+          setOutputFile(currentVoiceFile!!.absolutePath)
+          prepare()
+          start()
+      }
+      isRecording = true
+      btnVoiceMemo.text = "Stop Recording"
+
+    stopRecording():
+      mediaRecorder?.apply { stop(); release() }
+      mediaRecorder = null
+      isRecording = false
+      btnVoiceMemo.text = "Record Voice Memo"
+      currentVoiceFile?.let { viewLifecycleOwner.lifecycleScope.launch {
+          viewModel.saveVoiceMemo(it) } }
+
+  AttachmentAdapter (inner class):
+    Shows recent captures in item_attachment.xml.
+    Displays: thumbnail (image) or type icon (audio/text), filename, capture date.
+    On long press: confirm delete -> viewModel.deleteAttachment(item).
+
+
+FILE: app/src/main/res/xml/file_provider_paths.xml
+Role: Declares the FileProvider paths.
+
+  Structure:
+    <paths xmlns:android="http://schemas.android.com/apk/res/android">
+        <files-path name="captures" path="captures/" />
+        <files-path name="voice_memos" path="voice_memos/" />
+    </paths>
+
+  These paths match FileUtils.capturesDir() and FileUtils.voiceMemosDir().
+
+
+FILE: app/src/main/res/layout/fragment_capture.xml
+Role: Capture tab layout.
+
+  Structure:
+    ConstraintLayout
+      LinearLayout (vertical, top section)
+        LinearLayout (horizontal, row 1)
+          btnCamera (Button, weight 1)
+          btnGallery (Button, weight 1)
+        LinearLayout (horizontal, row 2)
+          btnVoiceMemo (Button, weight 1)
+          btnTextNote (Button, weight 1)
+        textCaptureStatus (TextView, centered, italic)
+      RecyclerView (id: recyclerViewAttachments, remaining space)
+
+
+FILE: app/src/main/res/layout/item_attachment.xml
+Role: Single attachment row in the recent captures list.
+
+  Structure:
+    ConstraintLayout (height 72dp)
+      ImageView (id: imgThumbnail — 56x56dp, shows preview for images;
+                 type icon for audio/text)
+      TextView (id: textFileName — file name truncated to 1 line)
+      TextView (id: textCaptureDate — formatted capture date)
+      TextView (id: textAttachmentType — "Receipt Photo", "Voice Memo", etc.)
+      ImageView (id: iconUploaded — checkmark if uploaded, cloud icon if pending)
+
+--------------------------------------------------------------------------------
+DATA FLOW
+--------------------------------------------------------------------------------
+Camera capture:
+  btnCamera -> CameraX TakePicture (URI to pendingPhotoFile)
+  -> onSuccess: viewModel.saveReceiptPhoto(file)
+  -> attachRepo.save() -> Room insert
+  -> recentAttachments Flow re-emits -> AttachmentAdapter updates
+  -> FileTransferManager (E-3) detects new pending upload -> queues upload
+
+Gallery pick:
+  btnGallery -> GetContent "image/*" -> URI
+  -> viewModel.saveGalleryImage(uri, context)
+  -> copy to internal storage -> attachRepo.save() -> same as above
+
+Voice memo:
+  btnVoiceMemo -> startRecording() / stopRecording()
+  -> MediaRecorder writes .m4a to voice_memos/ dir
+  -> viewModel.saveVoiceMemo(file) -> attachRepo.save()
+
+Text note:
+  btnTextNote -> AlertDialog -> user types
+  -> viewModel.saveTextNote(text)
+  -> FileUtils.newTextNoteFile() writes .txt
+  -> attachRepo.save()
+
+--------------------------------------------------------------------------------
+SAFETY & SECURITY NOTES
+--------------------------------------------------------------------------------
+- Camera URI passed to TakePicture must be a content:// URI from FileProvider,
+  NOT a file:// URI. FileUtils.getContentUri() ensures this.
+- MediaRecorder must be released in onDestroyView() if isRecording is true at
+  fragment destruction (e.g. user navigates away mid-recording).
+- Gallery image is COPIED to internal storage. The original URI (which may
+  point to cloud storage or removable media) is not kept. This ensures the
+  attachment is always accessible at a stable local path.
+- saveGalleryImage() must check that the content URI is readable before opening
+  the input stream. Handle SecurityException from contentResolver.openInputStream().
+
+--------------------------------------------------------------------------------
+UNIT TESTS — WHAT TO VERIFY
+--------------------------------------------------------------------------------
+- CaptureViewModel.saveTextNote("test content") creates a .txt file in
+  capturesDir() and inserts an AttachmentEntity with mimeType "text/plain".
+- CaptureViewModel.saveReceiptPhoto(file) inserts an AttachmentEntity with
+  uploadedMs = -1L (pending upload).
+- CaptureViewModel.deleteAttachment() removes the entity AND the file from disk.
+- file_provider_paths.xml paths match FileUtils.capturesDir() and voiceMemosDir().
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] CaptureViewModel.kt compiles with all 6 functions.
+[ ] CaptureFragment.kt compiles with camera, gallery, audio, text paths.
+[ ] MediaRecorder is properly released in onDestroyView() if recording.
+[ ] Camera URI uses FileProvider.getUriForFile() (not file:// URI).
+[ ] Gallery image is copied to internal storage, not kept at original URI.
+[ ] file_provider_paths.xml exists at res/xml/ with two paths entries.
+[ ] fragment_capture.xml and item_attachment.xml exist.
+[ ] ./gradlew :app:assembleDebug builds with zero errors.
+[ ] RECORD_AUDIO permission is checked before starting MediaRecorder —
+    check requireContext().checkSelfPermission(RECORD_AUDIO) == GRANTED.
+================================================================================

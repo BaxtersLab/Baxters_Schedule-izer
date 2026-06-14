@@ -1,0 +1,128 @@
+================================================================================
+BLOCK B-2 — APP MODULE BUILD.GRADLE
+Module B: Gradle Scaffold
+================================================================================
+
+BLOCK ID:       B-2
+MODULE:         B — Gradle Scaffold
+CRATE:          apk/app/
+DEPENDS ON:     B-1
+BUILD ORDER:    4 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block creates app/build.gradle — the app module's build configuration. It
+declares SDK levels, enables ViewBinding, and lists every library dependency
+the app needs. After this block, Gradle can resolve all dependencies and the
+project performs a clean sync. No Kotlin source files exist yet.
+
+This block does NOT write AndroidManifest.xml (that is B-3) or any Kotlin source.
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+
+FILE: apk/app/build.gradle
+Role: App module Gradle configuration — SDK versions, build types, ViewBinding,
+      kapt for Room, and all library dependencies.
+
+  android block requirements:
+    namespace 'com.baxter.schedulaizer'
+    compileSdk 34
+    defaultConfig:
+      applicationId "com.baxter.schedulaizer"
+      minSdk 26
+      targetSdk 34
+      versionCode 1
+      versionName "1.0.0"
+      testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    buildTypes:
+      release: minifyEnabled false, default proguard file
+      debug: debuggable true
+    compileOptions:
+      sourceCompatibility JavaVersion.VERSION_17
+      targetCompatibility JavaVersion.VERSION_17
+    kotlinOptions:
+      jvmTarget = '17'
+    buildFeatures:
+      viewBinding true
+    sourceSets:
+      main { jniLibs.srcDirs = ['src/main/jniLibs'] }
+
+  plugins block (at top):
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'org.jetbrains.kotlin.kapt'
+
+  dependencies block — complete list with versions:
+
+    CORE ANDROID
+      androidx.core:core-ktx:1.12.0
+      androidx.appcompat:appcompat:1.6.1
+      com.google.android.material:material:1.11.0
+      androidx.constraintlayout:constraintlayout:2.1.4
+
+    LIFECYCLE / VIEWMODEL
+      androidx.lifecycle:lifecycle-viewmodel-ktx:2.7.0
+      androidx.lifecycle:lifecycle-livedata-ktx:2.7.0
+      androidx.lifecycle:lifecycle-runtime-ktx:2.7.0
+      androidx.lifecycle:lifecycle-service:2.7.0
+
+    NAVIGATION COMPONENT
+      androidx.navigation:navigation-fragment-ktx:2.7.6
+      androidx.navigation:navigation-ui-ktx:2.7.6
+
+    ROOM (database)
+      androidx.room:room-runtime:2.6.1
+      androidx.room:room-ktx:2.6.1
+      kapt 'androidx.room:room-compiler:2.6.1'
+
+    WORKMANAGER (background tasks / alerts)
+      androidx.work:work-runtime-ktx:2.9.0
+
+    COROUTINES
+      org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0
+
+    CAMERAX (receipt / photo capture)
+      androidx.camera:camera-core:1.3.1
+      androidx.camera:camera-camera2:1.3.1
+      androidx.camera:camera-lifecycle:1.3.1
+      androidx.camera:camera-view:1.3.1
+
+    ACTIVITY RESULT / PERMISSIONS
+      androidx.activity:activity-ktx:1.8.2
+
+    TESTING
+      junit:junit:4.13.2 (testImplementation)
+      androidx.test.ext:junit:1.1.5 (androidTestImplementation)
+      androidx.test.espresso:espresso-core:3.5.1 (androidTestImplementation)
+      androidx.room:room-testing:2.6.1 (testImplementation)
+
+--------------------------------------------------------------------------------
+DATA FLOW
+--------------------------------------------------------------------------------
+No data flow in this block. This is build configuration only.
+
+--------------------------------------------------------------------------------
+DESIGN DECISIONS
+--------------------------------------------------------------------------------
+- ViewBinding enabled instead of DataBinding — simpler, no XML expressions,
+  sufficient for this app's UI complexity.
+- kapt used for Room annotation processing — ksp is preferred in newer projects
+  but kapt is stable and avoids additional plugin setup complexity in v1.
+- CameraX 1.3.1 used for receipt capture — handles camera2 complexity, lifecycle
+  awareness, and surface rotation automatically.
+- minSdk 26 (Android 8.0) — covers 98%+ of active Android devices as of 2026.
+  Exact alarms (AlarmManager.setExactAndAllowWhileIdle) available from API 23.
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] apk/app/build.gradle exists with all sections listed above.
+[ ] ./gradlew :app:dependencies (run from apk/) resolves without error.
+[ ] Android Studio Gradle sync completes with zero errors.
+[ ] ViewBinding is confirmed enabled (buildFeatures.viewBinding = true).
+[ ] Room compiler is declared under kapt, not implementation.
+[ ] jniLibs srcDir is declared so .so files in src/main/jniLibs/ are packaged.
+================================================================================

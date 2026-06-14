@@ -1,0 +1,182 @@
+================================================================================
+BAXTERS SCHEDUALIZER — PROJECT INDEX
+================================================================================
+
+Project:        Baxters Schedualizer
+Platform:       Android APK (Kotlin)
+Package:        com.baxter.schedulaizer
+Min SDK:        26 (Android 8.0)
+Target SDK:     34 (Android 14)
+Version:        1.0 Pre-Build
+Date:           2026-06-08
+Build order:    23 blocks across 8 modules
+
+Original spec:  baxters schedualizerAPK.txt (in this folder)
+Template used:  GENERAL_MODULE_BLOCK_TEMPLATE.md
+                (C:\Users\Baxter\Desktop\CONSTITUTION\)
+
+================================================================================
+WHAT THIS APP IS
+================================================================================
+
+A personal Android productivity hub for Baxter. All life data — calendar
+events, recurring bills, receipts, voice memos, and reminders — flows through
+this app and up to the homelab PC via the RemoteDexter tunnel. The Windows side
+is handled by Budget Blaster (OCR + accounting). Schedualizer is the mobile
+input surface.
+
+================================================================================
+INTEGRATION POINTS
+================================================================================
+
+RemoteDexter (stand-alone backup)
+  - Schedualizer reuses the compiled Rust .so from RemoteDexter-v3.
+  - The .so provides the encrypted Android-to-Windows tunnel.
+  - Schedualizer does NOT modify RemoteDexter source. Read/use only.
+  - .so ABI folders needed: arm64-v8a/, armeabi-v7a/, x86_64/
+
+Budget Blaster (Windows app)
+  - Schedualizer POSTs receipt images as JSON to a LAN HTTP endpoint.
+  - Endpoint is user-configured in Settings (IP:port, no hardcoding).
+  - Payload: { date, amount_hint, category, filename, image_base64 }
+
+================================================================================
+BLOCK INDEX — 23 BLOCKS, 8 MODULES, LINEAR BUILD ORDER
+================================================================================
+
+MODULE A — SCOPE & PROJECT LAYOUT  (orientation, no code)
+--------------------------------------------------------------------------------
+  Block  Build  File                      Title
+  A-1    1      module a block 1.txt      Project Scope & Integration Points
+  A-2    2      module a block 2.txt      Folder Tree & Package Map
+
+MODULE B — GRADLE SCAFFOLD
+--------------------------------------------------------------------------------
+  Block  Build  File                      Title
+  B-1    3      module b block 1.txt      Root Gradle Files
+  B-2    4      module b block 2.txt      App Module build.gradle
+  B-3    5      module b block 3.txt      AndroidManifest.xml
+
+MODULE C — CORE SHARED TYPES
+--------------------------------------------------------------------------------
+  Block  Build  File                      Title
+  C-1    6      module c block 1.txt      Enums, Constants & App Class
+  C-2    7      module c block 2.txt      Utility Singletons (DateUtils, FileUtils)
+
+MODULE D — DATA LAYER (ROOM)
+--------------------------------------------------------------------------------
+  Block  Build  File                      Title
+  D-1    8      module d block 1.txt      Room Entities (5 tables)
+  D-2    9      module d block 2.txt      Room DAOs (5 DAOs)
+  D-3    10     module d block 3.txt      Room Database Class & TypeConverters
+  D-4    11     module d block 4.txt      Repositories (EventRepo, BillRepo, AttachRepo)
+
+MODULE E — SERVICE & BACKGROUND
+--------------------------------------------------------------------------------
+  Block  Build  File                      Title
+  E-1    12     module e block 1.txt      SchedulaizerService + TransportBindings
+  E-2    13     module e block 2.txt      AlertScheduler, AlertReceiver, BootReceiver
+  E-3    14     module e block 3.txt      FileTransferManager + BudgetBlasterBridge
+
+MODULE F — VOICE AGENT
+--------------------------------------------------------------------------------
+  Block  Build  File                      Title
+  F-1    15     module f block 1.txt      VoiceListenerService (SpeechRecognizer)
+  F-2    16     module f block 2.txt      IntentParser (utterance -> SchedulerIntent)
+  F-3    17     module f block 3.txt      AgentDispatcher (intent -> action -> response)
+
+MODULE G — UI LAYER
+--------------------------------------------------------------------------------
+  Block  Build  File                      Title
+  G-1    18     module g block 1.txt      MainActivity + Navigation Graph
+  G-2    19     module g block 2.txt      Calendar Fragment + EventEditActivity
+  G-3    20     module g block 3.txt      Bills Fragment + BillEditActivity
+  G-4    21     module g block 4.txt      Capture Fragment (camera, gallery, audio, text)
+  G-5    22     module g block 5.txt      Transfer Fragment + Agent Fragment
+
+MODULE H — URGENCY ENGINE
+--------------------------------------------------------------------------------
+  Block  Build  File                      Title
+  H-1    23     module h block 1.txt      Emoji Urgency Alert System
+
+================================================================================
+URGENCY EMOJI SCALE (from H-1)
+================================================================================
+
+  Count   Level        Emoji   Label
+  0       CLEAR        😊✅    All clear
+  1       NEUTRAL      🙂      1 item
+  2       FLAT         😐      2 items pending
+  3-4     STRESSED     😰      Stress with sweat
+  5       PANIC        😱      Panic
+  6       SHOCK        😮      Shock (:O face)
+  7+      OVERWHELMED  😵      XX eyes — act NOW
+
+The urgency badge appears:
+  - Top-right corner of MainActivity (textUrgencyBadge, always visible)
+  - SchedulaizerService foreground notification (title emoji + color)
+  App launcher icon is static "😊✅" artwork (cannot change at runtime).
+
+================================================================================
+KEY DESIGN DECISIONS (SUMMARY)
+================================================================================
+
+1. Transport:   Reuse RemoteDexter .so — do not re-implement the tunnel.
+2. Database:    Room (SQLite), offline-first. No cloud DB.
+3. Voice:       Android SpeechRecognizer, EXTRA_PREFER_OFFLINE=true. No audio
+                leaves the device.
+4. DI:          Manual (no Hilt in v1). SchedulaizerApp provides all repos.
+5. BB bridge:   HTTP POST to LAN. HttpURLConnection — no Retrofit/OkHttp.
+6. Currency:    Stored as Long cents. No Float/Double for money.
+7. ProGuard:    Off in debug. On in release (basic rules).
+8. Urgency:     distinctUntilChanged() gates notification rebuilds — no spam.
+
+================================================================================
+MILESTONE ROADMAP
+================================================================================
+
+  M1   Gradle project builds — empty 5-tab shell            (Blocks B-1 to G-1)
+  M2   Room DB + EventEntity + CalendarFragment CRUD         (C through D-4, G-2)
+  M3   BillEntity + BillsFragment + AlertScheduler           (D-1, G-3, E-2)
+  M4   CaptureFragment (camera + gallery + memo)             (G-4)
+  M5   VoiceListenerService + IntentParser basics            (F-1, F-2)
+  M6   FileTransferManager + homelab upload via RD tunnel    (E-1, E-3)
+  M7   BudgetBlasterBridge + receipt payload packaging       (E-3)
+  M8   Emoji Urgency Engine live                             (H-1)
+  M9   Polish: themes, icons, Settings screen, edge cases
+  M10  APK release build + sideload test on device
+
+================================================================================
+FILES IN THIS FOLDER
+================================================================================
+
+  baxters schedualizerAPK.txt     Original user specification (source of truth)
+  project index.txt               This file
+  module a block 1.txt            Build 1
+  module a block 2.txt            Build 2
+  module b block 1.txt            Build 3
+  module b block 2.txt            Build 4
+  module b block 3.txt            Build 5
+  module c block 1.txt            Build 6
+  module c block 2.txt            Build 7
+  module d block 1.txt            Build 8
+  module d block 2.txt            Build 9
+  module d block 3.txt            Build 10
+  module d block 4.txt            Build 11
+  module e block 1.txt            Build 12
+  module e block 2.txt            Build 13
+  module e block 3.txt            Build 14
+  module f block 1.txt            Build 15
+  module f block 2.txt            Build 16
+  module f block 3.txt            Build 17
+  module g block 1.txt            Build 18
+  module g block 2.txt            Build 19
+  module g block 3.txt            Build 20
+  module g block 4.txt            Build 21
+  module g block 5.txt            Build 22
+  module h block 1.txt            Build 23
+  apk/                            Android project source (Gradle root)
+
+================================================================================
+END OF PROJECT INDEX
+================================================================================

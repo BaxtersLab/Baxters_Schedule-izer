@@ -1,0 +1,153 @@
+================================================================================
+BLOCK B-3 — ANDROIDMANIFEST.XML
+Module B: Gradle Scaffold
+================================================================================
+
+BLOCK ID:       B-3
+MODULE:         B — Gradle Scaffold
+CRATE:          apk/app/src/main/
+DEPENDS ON:     B-2
+BUILD ORDER:    5 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block creates AndroidManifest.xml. It declares all permissions the app
+needs, registers every Activity, Service, BroadcastReceiver, and Provider, and
+sets the application-level attributes. After this block, the APK can be
+installed and the OS knows the full surface area of the app. No Kotlin classes
+are created yet — the manifest references class names that will be written in
+later blocks.
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+
+FILE: apk/app/src/main/AndroidManifest.xml
+Role: Android OS contract — permissions, components, intent filters.
+
+  Manifest attributes:
+    package="com.baxter.schedulaizer"
+    xmlns:android="http://schemas.android.com/apk/res/android"
+
+  PERMISSIONS — each listed with its justification:
+
+    android.permission.INTERNET
+      Justification: BudgetBlasterBridge POSTs to homelab LAN HTTP endpoint.
+                     FileTransferManager uses RemoteDexter tunnel (TCP).
+
+    android.permission.FOREGROUND_SERVICE
+      Justification: SchedulaizerService runs as a foreground service.
+
+    android.permission.FOREGROUND_SERVICE_DATA_SYNC
+      Justification: foregroundServiceType="dataSync" on SchedulaizerService.
+
+    android.permission.WAKE_LOCK
+      Justification: SchedulaizerService holds a partial wake lock during
+                     active file transfers.
+
+    android.permission.RECEIVE_BOOT_COMPLETED
+      Justification: BootReceiver reschedules all alerts after device reboot.
+
+    android.permission.CAMERA
+      Justification: CaptureFragment uses CameraX to photograph receipts.
+
+    android.permission.RECORD_AUDIO
+      Justification: VoiceListenerService uses SpeechRecognizer (mic input).
+
+    android.permission.USE_EXACT_ALARM  (API 33+)
+      Justification: AlertScheduler sets exact alarms for time-critical events.
+      Note: On API 32 and below, setExactAndAllowWhileIdle() is used instead.
+
+    android.permission.SCHEDULE_EXACT_ALARM
+      Justification: Fallback for exact alarm scheduling on API 31-32.
+
+    android.permission.POST_NOTIFICATIONS  (API 33+)
+      Justification: Displaying alert notifications requires explicit permission
+                     on Android 13+.
+
+    android.permission.ACCESS_NETWORK_STATE
+      Justification: FileTransferManager checks network availability before
+                     attempting uploads.
+
+  APPLICATION ELEMENT attributes:
+    android:name=".SchedulaizerApp"
+    android:allowBackup="true"
+    android:icon="@mipmap/ic_launcher"
+    android:label="@string/app_name"
+    android:theme="@style/Theme.BaxtersSchedulaizer"
+    android:supportsRtl="true"
+
+  ACTIVITIES:
+
+    .ui.MainActivity
+      android:exported="true"
+      intent-filter: MAIN + LAUNCHER
+
+    .ui.calendar.EventEditActivity
+      android:exported="false"
+      android:parentActivityName=".ui.MainActivity"
+
+    .ui.bills.BillEditActivity
+      android:exported="false"
+      android:parentActivityName=".ui.MainActivity"
+
+  SERVICES:
+
+    .service.SchedulaizerService
+      android:exported="false"
+      android:foregroundServiceType="dataSync"
+
+    .voice.VoiceListenerService
+      android:exported="false"
+
+  RECEIVERS:
+
+    .alerts.AlertReceiver
+      android:exported="false"
+      intent-filter: action "com.baxter.schedulaizer.FIRE_ALERT"
+
+    BootReceiver (full class: .alerts.BootReceiver)
+      android:exported="false"
+      android:enabled="true"
+      intent-filter: action android.intent.action.BOOT_COMPLETED
+
+  PROVIDERS:
+    androidx.core.content.FileProvider
+      android:exported="false"
+      android:grantUriPermissions="true"
+      android:authorities="${applicationId}.provider"
+      meta-data: android:name="android.support.FILE_PROVIDER_PATHS"
+                 android:resource="@xml/file_provider_paths"
+      Justification: Required for sharing captured image URIs with CameraX
+                     and for passing image files to external apps if needed.
+
+  NOTE: The file_provider_paths.xml resource must be created at
+        res/xml/file_provider_paths.xml with a <files-path> entry pointing to
+        "captures/" inside internal storage. This is created in G-4 (CaptureFragment).
+
+--------------------------------------------------------------------------------
+SAFETY & SECURITY NOTES
+--------------------------------------------------------------------------------
+- android:exported="false" on every component except MainActivity. Only the
+  launcher activity is intentionally exported.
+- FileProvider is used for all file URI sharing — direct file:// URIs are
+  prohibited on API 24+ and would cause FileUriExposedException.
+- USE_EXACT_ALARM on API 33+ requires user to grant the permission in Settings.
+  The app must check AlarmManager.canScheduleExactAlarms() before using exact
+  alarms and fall back to inexact WorkManager tasks if permission is denied.
+- android:allowBackup="true" is acceptable for personal single-user app. If
+  the user ever adds sensitive fields, this should be reviewed.
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] AndroidManifest.xml exists at apk/app/src/main/AndroidManifest.xml.
+[ ] All 10 permissions listed above are present with correct android:name values.
+[ ] MainActivity is registered with MAIN + LAUNCHER intent filter.
+[ ] SchedulaizerService has foregroundServiceType="dataSync".
+[ ] BootReceiver has BOOT_COMPLETED intent filter and android:enabled="true".
+[ ] AlertReceiver has the custom FIRE_ALERT action filter.
+[ ] FileProvider is registered with the correct authority and grantUriPermissions.
+[ ] ./gradlew :app:assembleDebug completes without manifest merge errors.
+================================================================================

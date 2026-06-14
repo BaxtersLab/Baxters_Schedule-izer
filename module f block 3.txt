@@ -1,0 +1,250 @@
+================================================================================
+BLOCK F-3 — AGENT DISPATCHER
+Module F: Voice Agent
+================================================================================
+
+BLOCK ID:       F-3
+MODULE:         F — Voice Agent
+CRATE:          com.baxter.schedulaizer.voice
+DEPENDS ON:     F-2, D-4, E-2
+BUILD ORDER:    17 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block creates AgentDispatcher — the action layer that receives a typed
+SchedulerIntent and executes the corresponding repository operations, then
+returns a spoken response string for text-to-speech or display. After this
+block, the full voice pipeline is complete: speech -> text -> intent -> action
+-> response.
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+
+FILE: app/src/main/java/com/baxter/schedulaizer/voice/AgentDispatcher.kt
+Role: Routes each SchedulerIntent to the appropriate repository call and
+      constructs a human-readable response string.
+
+  class AgentDispatcher(
+    private val eventRepo: EventRepository,
+    private val billRepo: BillRepository,
+    private val attachmentRepo: AttachmentRepository,
+    private val alertScheduler: AlertScheduler,
+    private val context: Context
+  )
+
+  Note: AgentDispatcher is NOT an object (singleton). It is instantiated by
+  AgentViewModel (G-5) using SchedulaizerApp.get(context) repositories.
+  This allows it to be unit-tested with mock repositories.
+
+  Primary function:
+
+    suspend fun dispatch(intent: SchedulerIntent): String
+      Dispatches to a private handler function based on intent type.
+      Returns the response string.
+      All handlers are suspend functions called with Dispatchers.IO.
+
+  Handler functions (all private suspend):
+
+    handleCreateEvent(intent: CreateEvent): String
+      If intent.dateTimeMs is null:
+        Returns "Got it — what time is the ${intent.title}? Please use the
+        calendar form to set the date."
+        (Does NOT create the event — delegates to EventEditActivity via UI.)
+      Else:
+        Creates EventEntity:
+          title = intent.title
+          startMs = intent.dateTimeMs
+          endMs = intent.dateTimeMs + 3_600_000L  (default 1 hour duration)
+          category = intent.category.name
+          priority = PriorityLevel.NORMAL.ordinal
+          alertOffsetMinutes = 15
+          createdMs = DateUtils.nowMs()
+          updatedMs = DateUtils.nowMs()
+        val id = eventRepo.save(event)
+        alertScheduler.scheduleForEvent(context, event.copy(id=id))
+        Returns "Added ${intent.title} to your calendar."
+
+    handleCreateBill(intent: CreateBill): String
+      If intent.dueDayOfMonth is null:
+        Returns "I'll need a due date for that bill. Please add it in the Bills tab."
+      Else:
+        Creates BillEntity with available fields. Unknown fields use defaults.
+        val id = billRepo.save(bill)
+        alertScheduler.scheduleForBill(context, bill.copy(id=id))
+        val amountStr = if (intent.amountCents != null)
+            "for ${formatCents(intent.amountCents)}" else ""
+        Returns "Bill '${intent.name}' due on the ${intent.dueDayOfMonth}th
+                 $amountStr has been added."
+
+    handleMarkBillPaid(intent: MarkBillPaid): String
+      Queries billRepo for all bills whose name contains intent.namePart
+      (case-insensitive) using a one-shot collect on unpaidBills.
+      If no match found:
+        Returns "I couldn't find an unpaid bill matching '${intent.namePart}'."
+      If multiple matches: picks the first (earliest due date).
+      Calls billRepo.markPaid(bill.id).
+      Returns "${bill.name} marked as paid. Next due: ${DateUtils.formatDate(bill.nextDueMs)}."
+
+    handleQueryBills(intent: QueryBills): String
+      Determines time window using intent.window:
+        TODAY      -> DateUtils.todayStartMs() to DateUtils.todayEndMs()
+        THIS_WEEK  -> DateUtils.startOfWeekMs() to DateUtils.endOfWeekMs()
+        THIS_MONTH -> DateUtils.startOfMonthMs() to DateUtils.endOfMonthMs()
+        ALL        -> 0L to Long.MAX_VALUE
+      One-shot collects billRepo.getBillsDueInRange(from, to).
+      If empty: Returns "No bills due ${windowLabel(intent.window)}."
+      Else: builds a summary string listing bill names and amounts.
+        Example: "You have 2 bills due this week: Electric ($45.00) on Jun 10,
+                  Netflix ($15.99) on Jun 12."
+      Total unpaid amount is appended: "Total due: $60.99."
+
+    handleQueryEvents(intent: QueryEvents): String
+      Similar to handleQueryBills but uses eventRepo.getEventsInRange().
+      Returns a summary of upcoming events in the window.
+      Example: "You have 1 event this week: Dentist on Friday Jun 12 at 2:00 PM."
+
+    handleUploadAttachment(intent: UploadAttachment): String
+      One-shot collects attachmentRepo.allAttachments, picks the most recently
+      captured (highest capturedMs).
+      If none found: Returns "No captured files found to upload."
+      Based on intent.target:
+        HOMELAB:
+          The attachment is already in the pending queue if not uploaded.
+          Returns "The most recent file (${attachment.fileName}) is queued
+                   for upload to your homelab."
+        BUDGET_BLASTER:
+          If attachment.mimeType does not start with "image/":
+            Returns "Budget Blaster only accepts images. The most recent
+                     file is a ${attachment.attachmentType}."
+          Else:
+            Marks the attachment for Budget Blaster by setting
+            isSentToBudgetBlaster = false (it should already be in the queue).
+            Returns "Sending ${attachment.fileName} to Budget Blaster."
+
+    handleCreateAlert(intent: CreateAlert): String
+      If intent.offsetMs is null:
+        Creates an alert for 15 minutes from now as default.
+        offsetMs = 15 * 60_000L
+      Else: offsetMs = intent.offsetMs
+      Creates AlertEntity:
+        parentId = 0L (standalone alert, no parent event/bill)
+        parentType = ""
+        title = "Reminder"
+        body = intent.description
+        fireAtMs = DateUtils.nowMs() + offsetMs
+        isActive = true
+      Calls alertScheduler.scheduleExact(context, alert).
+        (Insert into DB first, then schedule.)
+      val timeStr = DateUtils.formatDateTime(alert.fireAtMs)
+      Returns "Reminder set for $timeStr: ${intent.description}."
+
+    handleCreateMemo(intent: CreateMemo): String
+      Creates a MemoEntity:
+        parentId = 0L (standalone)
+        parentType = ""
+        content = intent.content
+        title = "Note — ${DateUtils.formatDate(DateUtils.nowMs())}"
+        priority = PriorityLevel.NORMAL.ordinal
+        createdMs = DateUtils.nowMs()
+        updatedMs = DateUtils.nowMs()
+      Inserts via memoDao directly (or add saveMemo() to a future repository).
+        For v1: access memoDao via SchedulaizerApp.get(context).database.memoDao()
+        since no MemoRepository was created in D-4.
+      Returns "Note saved: ${intent.content.take(50)}${if (intent.content.length > 50) "..." else ""}."
+
+    handleUnknown(): String
+      Returns "Sorry, I didn't catch that. Try saying: 'Add event', 'Add bill',
+               'Mark [bill] paid', 'What bills are due', or 'Remind me'."
+
+  Private helper: formatCents(cents: Long): String
+    "${"%.2f".format(cents / 100.0)}"
+    Example: 4500L -> "$45.00", 999L -> "$9.99"
+
+  Private helper: windowLabel(window: QueryWindow): String
+    TODAY -> "today", THIS_WEEK -> "this week",
+    THIS_MONTH -> "this month", ALL -> ""
+
+--------------------------------------------------------------------------------
+DATA FLOW
+--------------------------------------------------------------------------------
+AgentFragment BroadcastReceiver receives recognized text
+  -> AgentViewModel.onVoiceResult(text)
+  -> viewModelScope.launch(IO) {
+       val intent = IntentParser.parse(text)
+       val response = dispatcher.dispatch(intent)
+       _transcript.emit(Pair(text, response))
+     }
+  -> AgentFragment observes _transcript -> displays in chat UI
+  -> AgentViewModel optionally calls TextToSpeech.speak(response)
+
+--------------------------------------------------------------------------------
+INTERFACES EXPOSED
+--------------------------------------------------------------------------------
+- AgentDispatcher(eventRepo, billRepo, attachmentRepo, alertScheduler, context)
+    Instantiated by AgentViewModel (G-5).
+- AgentDispatcher.dispatch(intent: SchedulerIntent): String
+    The single entry point consumed by AgentViewModel.
+
+--------------------------------------------------------------------------------
+DESIGN DECISIONS
+--------------------------------------------------------------------------------
+- AgentDispatcher is a class, not an object, to support unit testing with
+  mock repositories. See F-2 Decision rationale for rule-based approach.
+- When dateTimeMs is null (unclear date), CreateEvent does NOT create an event
+  automatically — it returns a string directing the user to the UI form.
+  Reason: creating an event with a wrong date is more harmful than asking
+  the user to confirm. Ambiguity is reported, not guessed.
+- handleMarkBillPaid uses a partial name match (contains). Reason: the user
+  will say "mark electric paid" not "mark Electric Bill - ComEd 2026 paid".
+  Case-insensitive contains is pragmatic for a personal app.
+- handleUnknown returns a help string listing supported commands. Reason:
+  helps the user learn the vocabulary without reading documentation.
+
+--------------------------------------------------------------------------------
+SAFETY & SECURITY NOTES
+--------------------------------------------------------------------------------
+- All DB writes in AgentDispatcher run on Dispatchers.IO. The coroutine is
+  launched from AgentViewModel's viewModelScope — it is automatically cancelled
+  if the ViewModel is cleared (Activity destroyed).
+- No user input from voice is ever executed as SQL directly. All writes go
+  through repository methods with parameterized Room queries.
+- handleMarkBillPaid matches by name substring, not by SQL LIKE injection.
+  The name is used as a Kotlin .contains() check on in-memory data, never
+  embedded in a SQL string.
+
+--------------------------------------------------------------------------------
+UNIT TESTS — WHAT TO VERIFY
+--------------------------------------------------------------------------------
+Use a fake/in-memory repository backed by SchedulaizerDatabase.buildInMemory().
+
+- dispatch(CreateEvent("Dentist", fridayMs, MEDICAL)) inserts an EventEntity
+  and returns a string containing "Dentist".
+- dispatch(CreateEvent("Meeting", null, WORK)) returns a string containing
+  "calendar form" and does NOT insert any event.
+- dispatch(CreateBill("Electric", 15, 4500L)) inserts a BillEntity and
+  returns a string containing "Electric" and "15th".
+- dispatch(MarkBillPaid("electric")) with a pre-inserted "Electric Bill" entity
+  calls billRepo.markPaid() and returns a string containing "marked as paid".
+- dispatch(MarkBillPaid("nonexistent")) returns a string containing "couldn't find".
+- dispatch(QueryBills(THIS_WEEK)) with no bills returns "No bills due this week."
+- dispatch(QueryBills(THIS_WEEK)) with 2 bills in range returns count and names.
+- dispatch(Unknown) returns the help string containing "Add event".
+- formatCents(4500L) returns "$45.00".
+- formatCents(999L) returns "$9.99".
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] AgentDispatcher.kt compiles with dispatch() and all 8 handler functions.
+[ ] formatCents() and windowLabel() helpers are present.
+[ ] dispatch() handles every SchedulerIntent subclass (exhaustive when expression).
+[ ] handleCreateEvent inserts event AND schedules alert when dateTimeMs != null.
+[ ] handleCreateBill inserts bill AND schedules alert.
+[ ] handleMarkBillPaid advances nextDueMs via billRepo.markPaid().
+[ ] handleCreateAlert creates standalone AlertEntity with correct fireAtMs.
+[ ] handleUnknown returns a non-empty help string.
+[ ] All unit tests listed above pass.
+[ ] ./gradlew :app:compileDebugKotlin passes for AgentDispatcher.kt.
+================================================================================

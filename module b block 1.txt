@@ -1,0 +1,80 @@
+================================================================================
+BLOCK B-1 — ROOT GRADLE FILES
+Module B: Gradle Scaffold
+================================================================================
+
+BLOCK ID:       B-1
+MODULE:         B — Gradle Scaffold
+CRATE:          apk/ (Android project root)
+DEPENDS ON:     A-1, A-2
+BUILD ORDER:    3 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block creates the four root-level Gradle configuration files that define
+the Android project. After this block, the project directory is recognized as
+a valid Android Gradle project by Android Studio and the Gradle wrapper. No
+application code exists yet — just the build infrastructure skeleton.
+
+This block does NOT write app/build.gradle (that is B-2) or AndroidManifest.xml
+(that is B-3).
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+
+FILE: apk/settings.gradle
+Role: Declares the Gradle project name and registers the :app subproject.
+  Content requirements:
+    - pluginManagement block with repositories: google(), mavenCentral(),
+      gradlePluginPortal()
+    - dependencyResolutionManagement block with repositories: google(),
+      mavenCentral()
+    - rootProject.name = "BaxtersSchedulaizer"
+    - include ':app'
+
+FILE: apk/build.gradle
+Role: Top-level build file. Declares AGP and Kotlin plugin versions.
+  Content requirements:
+    - plugins block only — no apply false omission, use 'apply false' for all:
+        id 'com.android.application' version '8.2.0' apply false
+        id 'org.jetbrains.kotlin.android' version '1.9.22' apply false
+        id 'org.jetbrains.kotlin.kapt' version '1.9.22' apply false
+    - No other content at root level.
+
+FILE: apk/gradle.properties
+Role: Global Gradle and Android build flags.
+  Content requirements:
+    org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+    android.useAndroidX=true
+    kotlin.code.style=official
+    android.nonTransitiveRClass=true
+
+FILE: apk/gradle/wrapper/gradle-wrapper.properties
+Role: Pins the Gradle distribution version for reproducible builds.
+  Content requirements:
+    distributionBase=GRADLE_USER_HOME
+    distributionPath=wrapper/dists
+    distributionUrl=https\://services.gradle.org/distributions/gradle-8.2-bin.zip
+    networkTimeout=10000
+    zipStoreBase=GRADLE_USER_HOME
+    zipStorePath=wrapper/dists
+
+--------------------------------------------------------------------------------
+DESIGN DECISIONS
+--------------------------------------------------------------------------------
+- Gradle 8.2 paired with AGP 8.2.0 — stable, widely compatible with AS Hedgehog+.
+- kapt plugin declared here for Room annotation processing in app/build.gradle.
+- nonTransitiveRClass=true reduces R class pollution between subprojects.
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] apk/settings.gradle exists with rootProject.name = "BaxtersSchedulaizer"
+[ ] apk/build.gradle exists with all three plugin declarations using apply false
+[ ] apk/gradle.properties exists with all four property lines
+[ ] apk/gradle/wrapper/gradle-wrapper.properties exists with gradle-8.2-bin.zip URL
+[ ] Opening the apk/ folder in Android Studio shows "BaxtersSchedulaizer" as the
+    project name with no sync errors on these root files alone.
+================================================================================

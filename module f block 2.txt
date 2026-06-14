@@ -1,0 +1,262 @@
+================================================================================
+BLOCK F-2 — INTENT PARSER
+Module F: Voice Agent
+================================================================================
+
+BLOCK ID:       F-2
+MODULE:         F — Voice Agent
+CRATE:          com.baxter.schedulaizer.voice
+DEPENDS ON:     F-1, C-1, C-2
+BUILD ORDER:    16 of 22
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+This block creates IntentParser — the natural language understanding layer
+that maps a raw recognized text string to a typed SchedulerIntent sealed class.
+After this block, AgentDispatcher (F-3) receives a strongly-typed intent and
+never needs to do string analysis itself.
+
+The parser is deterministic and rule-based (no ML). It uses keyword matching
+and simple regex patterns. This keeps it offline-only, fast, and fully
+predictable.
+
+--------------------------------------------------------------------------------
+FILES TO CREATE / MODIFY
+--------------------------------------------------------------------------------
+
+FILE: app/src/main/java/com/baxter/schedulaizer/voice/SchedulerIntent.kt
+Role: Sealed class defining all possible parsed intents.
+
+  sealed class SchedulerIntent
+
+  Subclasses:
+
+    data class CreateEvent(
+      val title: String,           // extracted event title
+      val dateTimeMs: Long?,       // parsed date/time epoch ms, null if unclear
+      val category: EventCategory  // inferred category, default PERSONAL
+    ) : SchedulerIntent()
+
+    data class CreateBill(
+      val name: String,            // bill name
+      val dueDayOfMonth: Int?,     // extracted day of month, null if unclear
+      val amountCents: Long?       // extracted amount in cents, null if unclear
+    ) : SchedulerIntent()
+
+    data class MarkBillPaid(
+      val namePart: String         // partial name to match against bills
+    ) : SchedulerIntent()
+
+    data class QueryBills(
+      val window: QueryWindow      // time window for the query
+    ) : SchedulerIntent()
+
+    data class QueryEvents(
+      val window: QueryWindow
+    ) : SchedulerIntent()
+
+    data class UploadAttachment(
+      val target: UploadTarget     // where to send: HOMELAB or BUDGET_BLASTER
+    ) : SchedulerIntent()
+
+    data class CreateAlert(
+      val description: String,     // what the reminder is for
+      val offsetMs: Long?          // how far in the future, null if unclear
+    ) : SchedulerIntent()
+
+    data class CreateMemo(
+      val content: String          // the memo text
+    ) : SchedulerIntent()
+
+    object Unknown : SchedulerIntent()
+      // Returned when the utterance does not match any pattern.
+
+  Enums used by SchedulerIntent:
+
+    enum class QueryWindow {
+      TODAY, THIS_WEEK, THIS_MONTH, ALL
+    }
+
+    enum class UploadTarget {
+      HOMELAB, BUDGET_BLASTER
+    }
+
+
+FILE: app/src/main/java/com/baxter/schedulaizer/voice/IntentParser.kt
+Role: Parses a raw text utterance into a SchedulerIntent.
+
+  object IntentParser
+
+  fun parse(utterance: String): SchedulerIntent
+    Normalizes input: utterance.trim().lowercase()
+    Runs through ordered pattern checks (first match wins):
+
+    1. CREATE EVENT patterns
+       Trigger words: "add", "create", "schedule", "new appointment",
+                      "new event", "put on calendar"
+       Examples:
+         "add dentist appointment Friday at 2pm"
+         "schedule a meeting tomorrow morning"
+         "create event team lunch next Monday"
+       Extract title: text after trigger word and before date/time keywords.
+       Extract date/time: attempt parseDateTime() on the utterance.
+       Infer category: if "appointment" or "doctor" or "dentist" or "medical"
+         in utterance -> MEDICAL; if "meeting" or "work" or "office" -> WORK;
+         if "bill" or "payment" or "pay" -> BILLS; else PERSONAL.
+       Returns CreateEvent(title, dateTimeMs, category).
+
+    2. CREATE BILL patterns
+       Trigger words: "add bill", "new bill", "remind me to pay",
+                      "set up bill", "recurring"
+       Examples:
+         "add bill electric on the 15th for $45"
+         "remind me to pay Netflix on the 1st"
+       Extract name: text between trigger and "on the"/"due"/"for $".
+       Extract day: regex \b(\d{1,2})(st|nd|rd|th)?\b after "on the"/"due"/"day".
+       Extract amount: regex \$(\d+(?:\.\d{1,2})?) converted to cents.
+       Returns CreateBill(name, dueDayOfMonth, amountCents).
+
+    3. MARK BILL PAID patterns
+       Trigger words: "mark paid", "paid", "i paid", "mark as paid"
+       Examples:
+         "mark electric paid"
+         "I paid Netflix"
+         "mark rent as paid"
+       Extract name part: text after trigger words.
+       Returns MarkBillPaid(namePart).
+
+    4. QUERY BILLS patterns
+       Trigger words: "what bills", "which bills", "show bills", "list bills",
+                      "bills due"
+       Window detection:
+         "today" -> TODAY
+         "this week" / "week" -> THIS_WEEK
+         "this month" / "month" -> THIS_MONTH
+         else -> THIS_WEEK (default)
+       Returns QueryBills(window).
+
+    5. QUERY EVENTS patterns
+       Trigger words: "what's on", "what do i have", "show events",
+                      "what events", "my schedule"
+       Window detection: same as above.
+       Returns QueryEvents(window).
+
+    6. UPLOAD / SEND RECEIPT patterns
+       Trigger words: "upload receipt", "send receipt", "upload last",
+                      "send to homelab", "send to budget"
+       Target detection:
+         "budget" or "blaster" or "accounting" -> BUDGET_BLASTER
+         else -> HOMELAB
+       Returns UploadAttachment(target).
+
+    7. CREATE ALERT / REMINDER patterns
+       Trigger words: "remind me", "set reminder", "set alert",
+                      "alert me", "don't let me forget"
+       Extract description: text after trigger, before time indicators.
+       Extract offset: attempt to parse "in X minutes/hours/days" pattern.
+         "in 30 minutes" -> 30 * 60_000L
+         "in 2 hours"    -> 2 * 3_600_000L
+         "tomorrow"      -> 24 * 3_600_000L
+         "in 3 days"     -> 3 * 86_400_000L
+       Returns CreateAlert(description, offsetMs).
+
+    8. CREATE MEMO patterns
+       Trigger words: "note", "memo", "write down", "remember that",
+                      "take note"
+       Everything after trigger becomes the memo content.
+       Returns CreateMemo(content).
+
+    9. Fallback:
+       Returns Unknown.
+
+  Private helper: parseDateTime(utterance: String): Long?
+    Attempts to extract a date/time from the utterance.
+    Patterns attempted (in order, first match wins):
+      "tomorrow" -> DateUtils.nowMs() + MS_PER_DAY, time 09:00
+      "today"    -> DateUtils.nowMs()
+      Day of week: "monday", "tuesday"... -> next occurrence of that weekday
+      "the Xth" / "the X" -> DateUtils.epochFromParts with extracted day,
+                              current month (or next month if day already passed)
+      Time only: "at Xpm" / "at X:XX" -> today at that time
+      Combined: "friday at 2pm" -> next Friday at 14:00
+    Returns null if no pattern matches.
+
+  Private helper: parseDayOfWeek(utterance: String): Long?
+    Extracts "monday"..."sunday" from the utterance.
+    Computes epoch ms of the next occurrence of that weekday (including today
+    if today is that weekday and the event time is in the future).
+    Returns null if no weekday found.
+
+  Private helper: parseTimeOfDay(utterance: String): Int
+    Returns hour of day (0–23).
+    Patterns:
+      "morning" -> 9
+      "afternoon" -> 13
+      "evening" -> 18
+      "night" -> 20
+      "at Xam" -> X
+      "at Xpm" -> X + 12 (handles 12pm = 12, 12am = 0)
+      "at X:YY" -> X (24h assumed if > 12 with no am/pm)
+    Returns 9 as default if no time found.
+
+--------------------------------------------------------------------------------
+INTERFACES EXPOSED
+--------------------------------------------------------------------------------
+- IntentParser.parse(utterance: String): SchedulerIntent
+    Consumed by AgentDispatcher (F-3) and AgentViewModel (G-5).
+- SchedulerIntent sealed class hierarchy — all subclasses —
+    Consumed by AgentDispatcher (F-3).
+- SchedulerIntent.QueryWindow, SchedulerIntent.UploadTarget enums —
+    Consumed by AgentDispatcher (F-3).
+
+--------------------------------------------------------------------------------
+DESIGN DECISIONS
+--------------------------------------------------------------------------------
+- Rule-based parsing, no ML: fast, offline, predictable. The vocabulary of
+  this app is narrow and structured. Baxter is the only user — training data
+  for a personal assistant is unnecessary overhead.
+- First-match ordering: more specific patterns (e.g. MARK BILL PAID) are checked
+  before more general ones (CREATE BILL). This prevents "I paid the electric
+  bill on the 15th" from being parsed as CreateBill instead of MarkBillPaid.
+- Returning Unknown instead of throwing: the dispatcher handles Unknown gracefully
+  by responding "Sorry, I didn't understand that — try again."
+- parseDateTime returns null instead of throwing: unknown dates are handled
+  downstream. For CreateEvent, a null dateTimeMs prompts the UI to ask the user
+  to pick a date. For CreateAlert, a null offsetMs prompts a default (15 minutes).
+
+--------------------------------------------------------------------------------
+UNIT TESTS — WHAT TO VERIFY
+--------------------------------------------------------------------------------
+- parse("add dentist appointment friday at 2pm") returns CreateEvent with
+  category = MEDICAL and dateTimeMs != null.
+- parse("add bill electric on the 15th for $45") returns CreateBill with
+  name containing "electric", dueDayOfMonth = 15, amountCents = 4500.
+- parse("remind me to pay Netflix on the 1st") returns CreateBill with
+  dueDayOfMonth = 1.
+- parse("mark electric paid") returns MarkBillPaid(namePart = "electric").
+- parse("what bills are due this week") returns QueryBills(THIS_WEEK).
+- parse("what bills are due this month") returns QueryBills(THIS_MONTH).
+- parse("upload receipt to budget blaster") returns
+  UploadAttachment(BUDGET_BLASTER).
+- parse("send to homelab") returns UploadAttachment(HOMELAB).
+- parse("remind me in 30 minutes") returns CreateAlert with offsetMs = 1_800_000L.
+- parse("note that the car needs an oil change") returns CreateMemo with
+  content containing "car needs an oil change".
+- parse("xyzzy frobble") returns Unknown.
+- parse("") returns Unknown (no crash on empty string).
+- parseTimeOfDay("at 2pm") returns 14.
+- parseTimeOfDay("morning") returns 9.
+- parseTimeOfDay("at 12pm") returns 12 (not 24).
+
+--------------------------------------------------------------------------------
+BLOCK COMPLETE WHEN
+--------------------------------------------------------------------------------
+[ ] SchedulerIntent.kt compiles with all 8 subclasses + 2 enums.
+[ ] IntentParser.kt compiles with parse(), parseDateTime(), parseDayOfWeek(),
+    parseTimeOfDay().
+[ ] All 14 unit tests listed above pass.
+[ ] parse() never throws on any string input (including empty, null-like,
+    very long strings).
+[ ] ./gradlew :app:compileDebugKotlin passes for both files.
+================================================================================
